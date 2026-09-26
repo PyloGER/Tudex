@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+- Beim Start sucht Tuxdex automatisch nach **System-Updates** (pacman, AUR, Flatpak). Die Anzahl erscheint am Tab „Updates“ und unten rechts – rot, wenn wichtige Updates dabei sind; ein Klick öffnet den Tab.
+- Einstellungen → System-Updates: automatische Prüfung beim Start an/aus. Installiert wird weiterhin nur auf Klick.
+
+## 1.5.0
+- Beim Start sucht Tuxdex automatisch nach Updates und bietet eine neue Version in einem Fenster an – mit den Neuerungen und „Jetzt aktualisieren“ / „Später“.
+- Einstellungen → Aktualisierung: automatische Prüfung beim Start an/aus, Update-Fenster an/aus (sonst nur Hinweis unten rechts).
+- ClamAV und Mullvad VPN sind rein optional: Tuxdex bietet keine Installation und keine Links mehr an. Fehlen sie, zeigt der Bereich nur einen neutralen Hinweis.
+
 ## 1.4.2
 - Updater erkennt neue Versionen sofort: Tuxdex fragt den neuesten Commit direkt ab, statt die bis zu 5 Minuten zwischengespeicherten Dateien von raw.githubusercontent.com zu lesen.
 - Update über GitHub lädt die Paketdateien gezielt vom neuesten Commit (robuster als das Archiv).
