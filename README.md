@@ -1,2 +1,148 @@
-# Tuxdex
-Grafische Systemverwaltung für Arch Linux: Updates, Software, USB-Sticks &amp; Datenträger, Speicheranalyse, Taskmanager, ClamAV, Firewall und Mullvad VPN – alles in einem Fenster, ohne Terminal.
+<p align="center">
+  <img src="docs/logo/wordmark-dark.png" alt="Tuxdex" width="380">
+</p>
+
+<p align="center">
+  <b>Grafische Systemverwaltung für Arch Linux – alles in einem Fenster, ohne Terminal.</b>
+</p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.0-2fb3a3">
+  <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
+  <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
+  <img alt="Qt" src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-41cd52">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/update.png" alt="Tuxdex – Updates" width="860">
+</p>
+
+---
+
+## Was ist Tuxdex?
+
+Tuxdex bündelt in einer übersichtlichen Oberfläche, wofür man sonst ein Dutzend Terminal-Befehle braucht: Updates, Pakete, USB-Sticks, Speicherplatz, Prozesse, Virenscan, Firewall und VPN.
+
+Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was passiert. Rückfragen von `pacman` oder `paru` erscheinen als Fenster. Das sudo-Passwort wird **einmal pro Sitzung** abgefragt und nie gespeichert.
+
+## Module
+
+| Modul | Was es kann |
+|---|---|
+| **Updates** | Auf Updates prüfen (pacman, AUR über paru, Flatpak) und einspielen · **Major-Updates** und Kernel/System-Pakete werden markiert · Neustart-Hinweis · Prüfergebnis bleibt nach dem Schließen erhalten |
+| **Software** | Alle Pakete mit Icon, Version, Größe, Quelle/Ort und Installationsdatum · per Kästchen auswählen und gemeinsam deinstallieren · installieren aus pacman, AUR (paru) oder Flathub |
+| **Flatpak** | Rechte jeder Flatpak-App per Schalter – Netzwerk, Dateien & Ordner, Geräte, Ton, Bildschirm, Umgebungsvariablen, Portal-Freigaben · Regeln für alle Apps · riskante Rechte sind markiert, Änderungen hervorgehoben · Flathub einrichten, Apps starten, aktualisieren, deinstallieren |
+| **Datenträger** | Laufwerke und Partitionen als Baum · Einhängen, Aushängen, Umbenennen, Prüfen, **Formatieren** (ext4, btrfs, xfs, exFAT, FAT32, NTFS), sicher entfernen · erkennt neue USB-Sticks automatisch · System-Partitionen sind geschützt |
+| **Speicher** | Belegung je Festplatte · „Was belegt den Platz?“ mit Drill-down in Ordner · Aufräumen: Paket-Cache, verwaiste Pakete, Journal, Papierkorb, Flatpak |
+| **Swap** | Swapfile anlegen und entfernen, Swappiness einstellen |
+| **Taskmanager** | Prozesse mit Programm-Icons, CPU, RAM, Datenträger-I/O, Energie-Schätzung · Leistung: CPU (Takt, Temperatur), RAM, GPU, Netzwerk, Datenträger, Akku · System: CPU-/GPU-Name, Mainboard, IP-Adressen, DNS |
+| **Antivirus** | ClamAV installieren, Signaturen aktualisieren, Ordner oder ganzes System scannen – mit **Live-Fortschritt** (Dateien, Datenmenge, Tempo, Restzeit) und Status, ob der Scan läuft oder hängt · Quarantäne mit Wiederherstellen |
+| **Sicherheit** | Sicherheits-Check (VPN, Firewall, LUKS, Secure Boot, Updates, Antivirus, offene Ports, SSH) · **offene Ports per Knopf sperren/freigeben** · **Mullvad VPN** einrichten und steuern (Konto, Standort, Kill-Switch, DNS-Filter) · ufw-Firewall mit Regeln |
+| **Benutzer** | Benutzerkonten und letzte Anmeldung |
+
+## Screenshots
+
+| Software | Flatpak |
+|---|---|
+| ![Software](docs/screenshots/software.png) | ![Flatpak](docs/screenshots/flatpak.png) |
+| **Datenträger** | **Speicher** |
+| ![Datenträger](docs/screenshots/disks.png) | ![Speicher](docs/screenshots/storage.png) |
+| **Sicherheit** | **Taskmanager** |
+| ![Sicherheit](docs/screenshots/security.png) | ![Taskmanager](docs/screenshots/tasks.png) |
+
+<sub>Die Screenshots zeigen Beispieldaten.</sub>
+
+## Installation
+
+Voraussetzung: Arch Linux oder eine Arch-basierte Distribution mit `base-devel` und `git`.
+
+```bash
+git clone https://github.com/DEIN-NAME/tuxdex.git
+cd tuxdex
+makepkg -si
+```
+
+`makepkg` installiert fehlende Abhängigkeiten, baut das Paket und installiert es über pacman. Danach findest du **Tuxdex** im Anwendungsmenü, im Terminal startet es mit `tuxdex`.
+
+### Aktualisieren
+
+Am einfachsten in Tuxdex selbst: **Zahnrad unten links → Aktualisierung**. Tuxdex prüft das GitHub-Repository, zeigt die Neuerungen und installiert die neue Version per Klick (baut mit makepkg, installiert mit pacman, startet neu). Alternativ „Aus Datei …“ (tuxdex-X.Y.Z.tar.gz) oder „Aus Ordner …“ (z. B. dein Git-Klon – vorher wird automatisch `git pull` ausgeführt).
+
+Oder im Terminal:
+
+```bash
+cd tuxdex
+git pull
+makepkg -si
+```
+
+### Entfernen
+
+```bash
+sudo pacman -R tuxdex
+```
+
+Gespeicherte Update-Prüfung und Quarantäne liegen in `~/.cache/tuxdex` und `~/.local/share/tuxdex` und bleiben beim Entfernen erhalten.
+
+### Ohne Installation ausprobieren
+
+```bash
+sudo pacman -S --needed python pyside6
+python3 tuxdex.py
+```
+
+## Abhängigkeiten
+
+**Pflicht** (installiert `makepkg -si` automatisch): `python`, `pyside6`, `sudo`, `util-linux`, `iproute2`, `pciutils`, `hwdata`, `pacman-contrib`, `ttf-ibm-plex`
+
+**Optional**, je nach genutzten Funktionen. Tuxdex erkennt fehlende Werkzeuge und bietet die Installation meist direkt an.
+
+| Paket | Wofür |
+|---|---|
+| `paru` (AUR) | AUR-Pakete aktualisieren und installieren |
+| `flatpak` | Flatpak-Apps |
+| `udisks2` | USB-Sticks ohne Passwort einhängen und sicher entfernen |
+| `dosfstools`, `exfatprogs`, `ntfs-3g`, `btrfs-progs`, `xfsprogs` | Formatieren in FAT32, exFAT, NTFS, btrfs, xfs |
+| `clamav` | Virenscanner |
+| `ufw` | Firewall |
+| `mullvad-vpn-daemon` | Mullvad VPN |
+| `sbctl` | Secure Boot einrichten |
+
+## Datenschutz & Sicherheit
+
+- **Keine Telemetrie.** Tuxdex sendet selbst nichts ins Internet. Einzige Ausnahme: der Knopf **„Öffentliche IP prüfen“** fragt `https://am.i.mullvad.net/json` ab, und zwar nur auf Klick.
+- **Passwort:** Das sudo-Passwort geht direkt an `sudo -v` und wird weder gespeichert noch protokolliert. Weitere Befehle nutzen die bestehende sudo-Sitzung (`sudo -n`).
+- **Mullvad-Kontonummer:** geht direkt an `mullvad account login` und wird weder angezeigt noch protokolliert.
+- **Schutz vor Fehlbedienung:** System-Partitionen (`/`, `/boot`, `/home`, Swap) lassen sich nicht aushängen oder formatieren. Formatieren verlangt das Eintippen des Gerätenamens, direkt davor prüft Tuxdex noch einmal, ob die Partition wirklich ausgehängt ist. Destruktive Aktionen fragen immer nach.
+
+## Projektstruktur
+
+```
+tuxdex.py              Die komplette Anwendung (eine Datei)
+tuxdex                 Startskript für /usr/bin
+tuxdex.desktop         Eintrag im Anwendungsmenü
+tuxdex.svg, *.png      App-Icon in allen Größen
+PKGBUILD               Bauanleitung für makepkg / pacman
+CHANGELOG.md           Änderungen je Version
+docs/                  Screenshots und Logo-Varianten
+```
+
+## Mitmachen
+
+Fehler gefunden oder eine Idee? Gern ein [Issue](../../issues) oder einen Pull Request.
+Bei Fehlern helfen die Datei `~/tuxdex_error.log` und die Angaben unter **Einstellungen → Technik** (Zahnrad unten links).
+
+Nach Änderungen an Dateien, die im `PKGBUILD` stehen, die Prüfsummen aktualisieren:
+
+```bash
+updpkgsums   # aus pacman-contrib
+```
+
+## Lizenz
+
+[MIT](LICENSE) © 2026 PyloGER
+
+---
+
+<sub>Tuxdex ist ein unabhängiges Community-Projekt und steht in keiner Verbindung zu Arch Linux, Mullvad VPN oder ClamAV und wird von ihnen weder unterstützt noch empfohlen. „Arch Linux“ und alle weiteren Marken gehören ihren jeweiligen Inhabern und werden hier nur beschreibend verwendet.</sub>
