@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.1"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -393,6 +393,10 @@ QTableWidget::indicator, QListWidget::indicator {
     width: 16px; height: 16px; border: 1.5px solid $line_strong; border-radius: 3px; background: $bg0;
 }
 QTableWidget::indicator:checked { background: $accent; border-color: $accent; image: url("$check"); }
+QPushButton#SysHint { background: transparent; color: $warn; border: 1px solid $warn; padding: 2px 10px;
+    font-size: 9pt; }
+QPushButton#SysHint[tone="danger"] { color: $danger; border-color: $danger; }
+QPushButton#SysHint:hover { background: $bg2; }
 QPushButton#UpdHint { background: transparent; color: $warn; border: 1px solid $warn; padding: 2px 10px;
     font-size: 9pt; }
 QPushButton#UpdHint:hover { background: $bg2; }
@@ -1224,7 +1228,6 @@ class PrivilegeManager:
 
 CACHE_DIR = os.path.join(os.path.expanduser("~/.cache"), "tuxdex")
 UPDATE_CACHE = os.path.join(CACHE_DIR, "updates.json")
-AUTO_CHECK_AFTER = 60 * 60  # Sekunden: gespeichertes Ergebnis älter als 1 h → im Hintergrund neu prüfen
 
 # Pakete, deren Update besondere Aufmerksamkeit verdient (Kernel, Boot, Basis-System, Grafik)
 CRITICAL_PKGS = {
@@ -1358,8 +1361,9 @@ class UpdaterTab(Page):
 
         self.load_last_update_times()
         self._load_cache()
-        if self.checked_at is None or time.time() - self.checked_at > AUTO_CHECK_AFTER:
-            QTimer.singleShot(800, lambda: self.check_updates(silent=True))
+        # Beim App-Start nach System-Updates suchen (pacman, AUR, Flatpak) – abschaltbar in den Einstellungen
+        if load_settings().get("sys_check_on_start", True):
+            QTimer.singleShot(1500, lambda: self.check_updates(silent=True))
 
     # ---- Anzeige --------------------------------------------------------
 
@@ -1416,6 +1420,8 @@ class UpdaterTab(Page):
 
         n = len(ups)
         important = [u for u in ups if u["kind"]]
+        if self.checked_at is not None and hasattr(self.app, "show_sys_updates"):
+            self.app.show_sys_updates(n, len(important))
         majors = [u for u in ups if u["kind"] == "major"]
         reboot = [u["name"] for u in ups if u["name"] in REBOOT_PKGS]
         if self.checked_at is None:
@@ -5201,10 +5207,9 @@ class AntivirusTab(Page):
         st.body.addWidget(self.st_note)
         b = QHBoxLayout()
         b.setSpacing(8)
-        self.b_install = Button("ClamAV installieren", "primary", self.install)
         self.b_fresh = Button("Signaturen aktualisieren", "ghost", self.update_signatures)
         self.b_auto = Button("Automatische Updates aktivieren", "ghost", self.enable_auto)
-        for x in (self.b_install, self.b_fresh, self.b_auto):
+        for x in (self.b_fresh, self.b_auto):
             b.addWidget(x)
         b.addStretch(1)
         st.body.addLayout(b)
@@ -5283,6 +5288,7 @@ class AntivirusTab(Page):
         self.last_scan = Label("", "Hint")
         sc.body.addWidget(self.last_scan)
         self.lay.addWidget(sc)
+        self.scan_panel = sc
 
         # --- Funde ---
         fp = Panel("Funde")
@@ -5313,6 +5319,7 @@ class AntivirusTab(Page):
         fa.addWidget(self.b_del)
         fp.body.addLayout(fa)
         self.lay.addWidget(fp)
+        self.found_panel = fp
 
         # --- Quarantäne ---
         qp = Panel("Quarantäne", [Button("↻", "icon", self.refresh_quarantine, "Neu laden")])
@@ -5386,14 +5393,17 @@ class AntivirusTab(Page):
                     if w:
                         w.deleteLater()
         self.installed = res["installed"]
-        self.b_install.setVisible(not self.installed)
         for x in (self.b_fresh, self.b_auto, self.b_scan):
             x.setEnabled(self.installed)
+            x.setVisible(self.installed)
+        self.scan_panel.setVisible(self.installed)
+        self.found_panel.setVisible(self.installed)
         if not self.installed:
-            self.badge.set("danger", "Nicht installiert")
+            self.badge.set("off", "Nicht installiert")
             self._st_item(0, "ClamAV", "nicht installiert")
-            self.st_note.setText("ClamAV fehlt. „ClamAV installieren“ installiert das Paket <b>clamav</b> "
-                                 "und lädt danach die Virensignaturen.")
+            self.st_note.setText(f'<span style="color:{COLORS["muted"]}">ClamAV ist nicht installiert. Tuxdex '
+                                 f'funktioniert auch ohne. Sobald ClamAV auf dem System vorhanden ist, lässt es sich '
+                                 f'hier bedienen.</span>')
             return
         # "ClamAV 1.4.1/27411/Wed Sep 25 08:34:07 2026"
         ver = res.get("version", "")
@@ -5446,20 +5456,6 @@ class AntivirusTab(Page):
         self.b_fresh.setProperty("variant", "primary" if (age_days is None or age_days > 3) else "ghost")
         repolish(self.b_fresh)
         self.st_note.setText("<br>".join(notes))
-
-    def install(self):
-        if not self.app.priv.ensure(self):
-            return
-        self.log.set_text("$ sudo pacman -S clamav\n")
-
-        def done(rc):
-            self.log.append_text(f"\n[Exit-Code {rc}]\n")
-            self.refresh_status()
-            if rc == 0:
-                self.update_signatures()
-
-        run_streaming(["pacman", "-S", "clamav"], self.log, needs_sudo=True, clear_first=False,
-                      on_done=done, interactive=True)
 
     def update_signatures(self):
         if not self.app.priv.ensure(self):
@@ -6190,9 +6186,7 @@ class SecurityTab(Page):
         self.mv_setup_text.setTextFormat(Qt.RichText)
         su.addWidget(self.mv_setup_text)
         sb = QHBoxLayout()
-        self.b_mv_install = Button("Mullvad installieren", "primary", self.mv_install)
         self.b_mv_daemon = Button("Mullvad-Dienst starten", "primary", self.mv_start_daemon)
-        sb.addWidget(self.b_mv_install)
         sb.addWidget(self.b_mv_daemon)
         sb.addStretch(1)
         su.addLayout(sb)
@@ -6213,14 +6207,11 @@ class SecurityTab(Page):
         self.acc_edit.setMinimumWidth(240)
         self.b_login = Button("Anmelden", "primary", self.mv_login)
         self.b_logout = Button("Abmelden", "ghost", self.mv_logout)
-        self.b_newacc = Button("Konto erstellen …", "ghost",
-                               lambda: subprocess.Popen(["xdg-open", "https://mullvad.net/account/create"],
-                                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         box = QVBoxLayout()
         box.addStretch(1)
         ab = QHBoxLayout()
         ab.setSpacing(8)
-        for w in (self.acc_edit, self.b_login, self.b_newacc, self.b_logout):
+        for w in (self.acc_edit, self.b_login, self.b_logout):
             ab.addWidget(w)
         box.addLayout(ab)
         acc.addLayout(box)
@@ -6394,11 +6385,14 @@ class SecurityTab(Page):
         elif r["vpn_ifaces"]:
             self.rows["vpn"].set("ok", "Aktiv", "VPN-Schnittstelle aktiv: " + ", ".join(r["vpn_ifaces"]))
         else:
-            warn += 1
-            self.rows["vpn"].set("warn", "Aus", "Dein Datenverkehr läuft ohne VPN – Anbieter und Webseiten sehen "
-                                 "deine echte IP.", "Mullvad einrichten" if not r["mullvad"] else "Verbinden",
-                                 (lambda: self._goto(self.mv_panel)) if not r["mullvad"]
-                                 else (lambda: self._mv_action(["connect"], wait=True)))
+            if r["mullvad"]:
+                warn += 1
+                self.rows["vpn"].set("warn", "Aus", "Mullvad ist nicht verbunden – Anbieter und Webseiten sehen "
+                                     "deine echte IP.", "Verbinden",
+                                     lambda: self._mv_action(["connect"], wait=True))
+            else:
+                self.rows["vpn"].set("off", "Kein VPN", "Es ist kein VPN aktiv. Optional – Tuxdex funktioniert auch "
+                                     "ohne VPN.")
         # Firewall
         if r["fw"]:
             self.rows["fw"].set("ok", "Aktiv", f"{r['fw_name']} läuft"
@@ -6450,9 +6444,7 @@ class SecurityTab(Page):
         av = r["av"]
         goto_av = lambda: self.app.select([m[0] for m in MODULES].index("antivirus"))
         if av is None:
-            self.rows["av"].set("off", "Nicht installiert", "ClamAV ist optional – unter Linux selten nötig, "
-                                "sinnvoll für Downloads und Dateien, die du an Windows-Nutzer weitergibst.",
-                                "Einrichten", goto_av)
+            self.rows["av"].set("off", "Nicht installiert", "ClamAV ist optional – Tuxdex funktioniert auch ohne.")
         elif av < 0:
             self.rows["av"].set("warn", "Keine Signaturen", "ClamAV ist installiert, aber ohne Virensignaturen.",
                                 "Einrichten", goto_av)
@@ -6687,15 +6679,8 @@ class SecurityTab(Page):
         if not installed:
             self.mv_badge.set("off", "Nicht installiert")
             self.mv_where.setText("")
-            helper = "paru" if which("paru") else ("yay" if which("yay") else None)
-            self.mv_setup_text.setText(
-                "Mullvad ist ein VPN ohne E-Mail oder Namen – du brauchst nur eine Kontonummer "
-                "(5 € / Monat, <a href='https://mullvad.net'>mullvad.net</a>).<br>"
-                + "Installiert wird <b>mullvad-vpn-daemon</b> (Dienst + Kommandozeile) aus den offiziellen "
-                  "Arch-Paketquellen – die Bedienung übernimmt diese App."
-                + (f" Falls nicht verfügbar: <b>mullvad-vpn-bin</b> aus dem AUR über {helper}." if helper else ""))
-            self.mv_setup_text.setOpenExternalLinks(True)
-            self.b_mv_install.show()
+            self.mv_setup_text.setText("Mullvad VPN ist nicht installiert. Tuxdex funktioniert auch ohne. Sobald "
+                                       "Mullvad auf dem System vorhanden ist, lässt es sich hier bedienen.")
             self.b_mv_daemon.hide()
             return
         if not daemon:
@@ -6703,7 +6688,6 @@ class SecurityTab(Page):
             self.mv_where.setText("")
             self.mv_setup_text.setText("Mullvad ist installiert, aber der Hintergrunddienst <b>mullvad-daemon</b> "
                                        "läuft nicht.")
-            self.b_mv_install.hide()
             self.b_mv_daemon.show()
             return
         st = r.get("status", "")
@@ -6744,7 +6728,7 @@ class SecurityTab(Page):
                                   + (f"  ·  Gerät „{dev.group(1).strip()}“" if dev else ""))
         else:
             self.acc_info.setText("Nicht angemeldet")
-        for w in (self.acc_edit, self.b_login, self.b_newacc):
+        for w in (self.acc_edit, self.b_login):
             w.setVisible(not logged_in)
         self.b_logout.setVisible(logged_in)
         # Einstellungen
@@ -6869,27 +6853,6 @@ class SecurityTab(Page):
         if ask_confirm(self, "Mullvad abmelden", "Dieses Gerät vom Mullvad-Konto abmelden?\n"
                        "Das VPN wird getrennt.", "Abmelden", danger=True):
             self._mv_action(["account", "logout"])
-
-    def mv_install(self):
-        # offizielles Repo zuerst (mullvad-vpn), sonst AUR
-        in_repo = subprocess.run(["pacman", "-Si", "mullvad-vpn-daemon"], capture_output=True, text=True).returncode == 0 \
-            if which("pacman") else False
-        helper = "paru" if which("paru") else ("yay" if which("yay") else None)
-        if in_repo:
-            steps = [{"cmd": ["pacman", "-S", "mullvad-vpn-daemon"], "needs_sudo": True, "interactive": True,
-                      "label": "sudo pacman -S mullvad-vpn-daemon"}]
-        elif helper:
-            steps = [{"cmd": [helper, "-S", "mullvad-vpn-bin"], "needs_sudo": False, "interactive": True,
-                      "label": f"{helper} -S mullvad-vpn-bin  (AUR)"}]
-        else:
-            show_error(self, "Nicht gefunden", "mullvad-vpn-daemon ist nicht in deinen Paketquellen. Installiere zuerst "
-                       "einen AUR-Helper wie paru – oder lade die App von mullvad.net.")
-            return
-        if not self.app.priv.ensure(self):
-            return
-        steps.append({"cmd": ["systemctl", "enable", "--now", "mullvad-daemon"], "needs_sudo": True,
-                      "label": "sudo systemctl enable --now mullvad-daemon"})
-        run_sequence(steps, self.log, on_all_done=lambda: QTimer.singleShot(1500, self.refresh_all))
 
     def mv_start_daemon(self):
         self._root(["systemctl", "enable", "--now", "mullvad-daemon"])
@@ -7046,7 +7009,8 @@ BUILD_DIR = os.path.join(os.path.expanduser("~/.cache"), "tuxdex", "build")
 
 
 def load_settings():
-    s = {"repo": DEFAULT_REPO, "branch": DEFAULT_BRANCH, "auto_check": True, "local_dir": ""}
+    s = {"repo": DEFAULT_REPO, "branch": DEFAULT_BRANCH, "auto_check": True, "ask_on_start": True, "local_dir": "",
+         "sys_check_on_start": True}
     s.update(_load_json(SETTINGS_FILE, {}))
     return s
 
@@ -7224,6 +7188,11 @@ class UpdatePanel(QWidget):
         self.cb_auto.setChecked(bool(self.settings.get("auto_check", True)))
         self.cb_auto.toggled.connect(self._auto_changed)
         p.body.addWidget(self.cb_auto)
+        self.cb_ask = QCheckBox("Gefundene Updates beim Start in einem Fenster anbieten (sonst nur Hinweis unten rechts)")
+        self.cb_ask.setChecked(bool(self.settings.get("ask_on_start", True)))
+        self.cb_ask.setEnabled(self.cb_auto.isChecked())
+        self.cb_ask.toggled.connect(self._ask_changed)
+        p.body.addWidget(self.cb_ask)
 
         # Lokal
         p.body.addWidget(Label("LOKAL AKTUALISIEREN", "FieldLabel"))
@@ -7270,6 +7239,11 @@ class UpdatePanel(QWidget):
 
     def _auto_changed(self, on):
         self.settings["auto_check"] = on
+        self.cb_ask.setEnabled(on)
+        save_settings(self.settings)
+
+    def _ask_changed(self, on):
+        self.settings["ask_on_start"] = on
         save_settings(self.settings)
 
     # ---- GitHub ---------------------------------------------------------------
@@ -7311,17 +7285,37 @@ class UpdatePanel(QWidget):
             txt = changes_since(cl, APP_VERSION)
             self.changes.setText(txt or f"Neue Version {ver}.")
             self.changes.show()
+            if silent and self.settings.get("ask_on_start", True):
+                self._offer_update(ver, txt)
         else:
             self.badge.set("ok", "Aktuell")
             self.changes.setText(f"Auf GitHub ist Version {ver} – du bist auf dem neuesten Stand.")
             self.changes.setVisible(not silent)
 
-    def update_from_github(self):
+    def _offer_update(self, ver, changes_html):
+        """Beim Start: neue Version in einem Fenster anbieten."""
+        box = QMessageBox(self.window())
+        box.setWindowTitle("Update verfügbar")
+        box.setTextFormat(Qt.RichText)
+        box.setText(f"<b>Tuxdex {ver} ist verfügbar</b> – installiert ist {APP_VERSION}.")
+        box.setInformativeText(changes_html or "")
+        later = box.addButton("Später", QMessageBox.RejectRole)
+        later.setProperty("variant", "ghost")
+        now = box.addButton("Jetzt aktualisieren", QMessageBox.AcceptRole)
+        now.setProperty("variant", "primary")
+        box.setDefaultButton(now)
+        box.exec()
+        if box.clickedButton() is now:
+            self.app.open_settings()
+            self.update_from_github(confirmed=True)
+
+    def update_from_github(self, confirmed=False):
         repo, branch = self.settings.get("repo"), self.settings.get("branch", "main")
         if not repo:
             return
-        if not ask_confirm(self, "Aktualisieren", f"Tuxdex auf Version {self.remote_version} aktualisieren?\n\n"
-                           f"Quelle: github.com/{repo} ({branch})", "Aktualisieren"):
+        if not confirmed and not ask_confirm(self, "Aktualisieren",
+                                             f"Tuxdex auf Version {self.remote_version} aktualisieren?\n\n"
+                                             f"Quelle: github.com/{repo} ({branch})", "Aktualisieren"):
             return
         self.log.show()
         self.log.set_text(f"Lade github.com/{repo} ({branch}) …\n")
@@ -7494,10 +7488,26 @@ class UpdatePanel(QWidget):
 
 
 class SettingsPage(Page):
+    def _sys_changed(self, on):
+        st = load_settings()
+        st["sys_check_on_start"] = on
+        save_settings(st)
+        self.update_panel.settings["sys_check_on_start"] = on   # gemeinsame Datei nicht mit altem Stand überschreiben
+        self.app.set_status("Gespeichert – gilt ab dem nächsten Start.")
+
     def __init__(self, app):
         super().__init__()
         self.app = app
         self.lay.addLayout(page_header("Einstellungen", Button("← Zurück", "ghost", app.back_from_settings)))
+        sysp = Panel("System-Updates")
+        self.cb_sys = QCheckBox("Beim Start automatisch nach System-Updates suchen (pacman, AUR, Flatpak)")
+        self.cb_sys.setChecked(bool(load_settings().get("sys_check_on_start", True)))
+        self.cb_sys.toggled.connect(self._sys_changed)
+        sysp.body.addWidget(self.cb_sys)
+        sysp.body.addWidget(Label("Gefundene Updates erscheinen als Zahl am Tab „Updates“ und unten rechts – "
+                                  "installiert wird erst, wenn du im Tab „Updates“ auf „Update starten“ klickst.",
+                                  "Hint", wrap=True))
+        self.lay.addWidget(sysp)
         self.update_panel = UpdatePanel(app)
         self.lay.addWidget(self.update_panel)
 
@@ -7709,6 +7719,12 @@ class MainWindow(QWidget):
         self.status = Label("Bereit.", "StatusText")
         sl.addWidget(self.status)
         sl.addStretch(1)
+        self.sys_hint = Button("", "ghost", lambda: self.select([m[0] for m in MODULES].index("update")))
+        self.sys_hint.setObjectName("SysHint")
+        self.sys_hint.hide()
+        sl.addWidget(self.sys_hint)
+        sl.addSpacing(8)
+        self._sys_updates = (0, 0)
         self.upd_hint = Button("", "ghost", self.open_settings)
         self.upd_hint.setObjectName("UpdHint")
         self.upd_hint.hide()
@@ -7731,11 +7747,12 @@ class MainWindow(QWidget):
             tb.addWidget(t)
             self.tabs.append(t)
         tb.addStretch(1)
+        self.show_sys_updates(*self._sys_updates)
         self.settings_page = SettingsPage(self)
         self.stack.addWidget(self.settings_page)
         if self.settings_page.update_panel.settings.get("auto_check") and \
                 self.settings_page.update_panel.settings.get("repo"):
-            QTimer.singleShot(4000, lambda: self.settings_page.update_panel.check(silent=True))
+            QTimer.singleShot(2500, lambda: self.settings_page.update_panel.check(silent=True))
         self._last_tab = 0
         self.select(0)
 
@@ -7798,6 +7815,22 @@ class MainWindow(QWidget):
             self.set_status("Neues Laufwerk erkannt: " + ", ".join("/dev/" + b for b in added))
         self.pages["disks"].refresh()
         self.pages["storage"].refresh_fs()
+
+    def show_sys_updates(self, n, important):
+        """Anzahl offener System-Updates: Hinweis unten rechts + Zahl am Tab „Updates“."""
+        self._sys_updates = (n, important)
+        if n:
+            self.sys_hint.setText(f"{'▲' if important else '●'}  {n} System-Update{'s' if n != 1 else ''}"
+                                  + (f" · {important} wichtig" if important else ""))
+            self.sys_hint.setProperty("tone", "danger" if important else "warn")
+            repolish(self.sys_hint)
+            self.sys_hint.show()
+        else:
+            self.sys_hint.hide()
+        tabs = getattr(self, "tabs", None)
+        if tabs:
+            i = [m[0] for m in MODULES].index("update")
+            tabs[i].text.setText("Updates" + (f"  {n}" if n else ""))
 
     def show_update_hint(self, ver):
         if ver:
