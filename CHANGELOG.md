@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.1
+- Update-Quelle ist fest auf github.com/PyloGER/Tuxdex eingestellt – der Updater findet neue Versionen jetzt ohne Einrichtung.
+- Einstellungen: Autor PyloGER, Unternehmen Voxellab, Kontakt contact@voxellab.de, Link zur Projektseite, Hinweis „AI made – mit Claude“.
+- Pfade im Home-Ordner werden als `~/…` angezeigt – ohne Benutzernamen.
+
 ## 1.4.0
 - **Updater** in den Einstellungen: nach Updates auf GitHub suchen (auch automatisch beim Start), Neuerungen anzeigen, per Klick aktualisieren und neu starten.
 - Lokal aktualisieren aus einem Archiv (tuxdex-X.Y.Z.tar.gz) oder einem Ordner mit PKGBUILD – Git-Klone werden vorher mit `git pull` aktualisiert.

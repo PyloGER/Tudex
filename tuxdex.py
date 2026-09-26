@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -445,6 +445,13 @@ def apply_theme(app):
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'))
     app.setStyle("Fusion")
     app.setStyleSheet(QSS.substitute(COLORS, check=check, arrow=arrow, sans=FONTS["sans"], mono=FONTS["mono"]))
+
+
+def short_path(p):
+    """Home-Ordner als ~ anzeigen, damit kein Benutzername im Bild steht."""
+    home = os.path.expanduser("~")
+    p = str(p)
+    return "~" + p[len(home):] if home not in ("", "/") and (p == home or p.startswith(home + "/")) else p
 
 
 def repolish(w):
@@ -1967,7 +1974,7 @@ class SoftwareTab(Page):
             return
         parts = [f"<b>{it['label']}</b> {it['version']} – {it['desc']}"]
         where = it["where"]
-        parts.append(f"Ort: <code>{where}</code> · Quelle: {it['source'].split(' · ')[0]}"
+        parts.append(f"Ort: <code>{short_path(where)}</code> · Quelle: {it['source'].split(' · ')[0]}"
                      + (f" · {it['extra']}" if it.get("extra") else ""))
         if it.get("reason"):
             parts.append("Installiert " + ("von dir" if it["reason"].startswith("Explicitly") else
@@ -2731,7 +2738,7 @@ class FlatpakTab(Page):
         if os.path.isdir(p) and which("xdg-open"):
             subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            show_info(self, "Datenordner", f"Die App hat noch keinen Datenordner ({p}).")
+            show_info(self, "Datenordner", f"Die App hat noch keinen Datenordner ({short_path(p)}).")
 
     def _scope(self):
         a = self._app(self.cur)
@@ -3861,7 +3868,7 @@ class StorageTab(Page):
             txt = QVBoxLayout()
             txt.setSpacing(0)
             txt.addWidget(Label(c["name"]))
-            txt.addWidget(Label(c["path"] + (f" · {c['hint']}" if c["hint"] else ""), "Hint"))
+            txt.addWidget(Label(short_path(c["path"]) + (f" · {c['hint']}" if c["hint"] else ""), "Hint"))
             self.cl_grid.addLayout(txt, i, 0)
             c["size_lbl"] = Label("—", "Value")
             c["size_lbl"].setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -5332,7 +5339,7 @@ class AntivirusTab(Page):
         qa.addStretch(1)
         qa.addWidget(self.b_qdel)
         qp.body.addLayout(qa)
-        qp.body.addWidget(Label(f"Dateien in Quarantäne liegen ohne Ausführungsrechte in {QUARANTINE_DIR}.",
+        qp.body.addWidget(Label(f"Dateien in Quarantäne liegen ohne Ausführungsrechte in {short_path(QUARANTINE_DIR)}.",
                                 "Hint", wrap=True))
         self.lay.addWidget(qp)
 
@@ -6997,8 +7004,9 @@ class SecurityTab(Page):
 # Einstellungen (vorerst: Über das Projekt & Autor)
 # --------------------------------------------------------------------------
 
-APP_AUTHOR = "Manu"
-APP_AUTHOR_MAIL = "mplan2002@gmail.com"
+APP_AUTHOR = "PyloGER"
+APP_COMPANY = "Voxellab"
+APP_AUTHOR_MAIL = "contact@voxellab.de"
 
 GEAR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -7031,7 +7039,7 @@ def svg_icon(svg, size=18):
 # Selbst-Aktualisierung (GitHub oder lokale Datei/Ordner)
 # --------------------------------------------------------------------------
 
-DEFAULT_REPO = ""          # z. B. "benutzer/tuxdex" – wird in den Einstellungen gesetzt
+DEFAULT_REPO = "PyloGER/Tuxdex"   # GitHub-Repository für Updates (in den Einstellungen änderbar)
 DEFAULT_BRANCH = "main"
 SETTINGS_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json")
 BUILD_DIR = os.path.join(os.path.expanduser("~/.cache"), "tuxdex", "build")
@@ -7503,6 +7511,14 @@ class SettingsPage(Page):
         g.setHorizontalSpacing(24)
         g.setVerticalSpacing(12)
         g.addLayout(Field("Entwickelt von", Label(APP_AUTHOR, "Value")), 0, 0)
+        g.addLayout(Field("Unternehmen", Label(APP_COMPANY, "Value")), 0, 2)
+        gh = Label(f'<a style="color:{COLORS["accent"]}" href="https://github.com/{DEFAULT_REPO}">'
+                   f'github.com/{DEFAULT_REPO}</a>', "Value")
+        gh.setTextFormat(Qt.RichText)
+        gh.setOpenExternalLinks(True)
+        g.addLayout(Field("Projektseite", gh), 1, 2)
+        g.addLayout(Field("Entstanden mit", Label("KI-gestützt entwickelt (AI made) – in Zusammenarbeit mit Claude "
+                                                    "von Anthropic", "Value", wrap=True)), 2, 0, 1, 3)
         mail = Label(f'<a style="color:{COLORS["accent"]}" href="mailto:{APP_AUTHOR_MAIL}">{APP_AUTHOR_MAIL}</a>',
                      "Value")
         mail.setTextFormat(Qt.RichText)
@@ -7524,10 +7540,10 @@ class SettingsPage(Page):
             ("Python", sys.version.split()[0]),
             ("Qt / PySide6", f"{qVersion()} / {pyside_ver}"),
             ("Schriften", f"{FONTS['sans']} · {FONTS['mono']}"),
-            ("Programmdatei", os.path.abspath(__file__)),
-            ("Zwischenspeicher", CACHE_DIR),
-            ("Quarantäne", QUARANTINE_DIR),
-            ("Fehlerprotokoll", os.path.expanduser("~/tuxdex_error.log")),
+            ("Programmdatei", short_path(os.path.abspath(__file__))),
+            ("Zwischenspeicher", short_path(CACHE_DIR)),
+            ("Quarantäne", short_path(QUARANTINE_DIR)),
+            ("Fehlerprotokoll", "~/tuxdex_error.log"),
         ]
         for i, (k, v) in enumerate(paths):
             lab = Label(v, "Value", wrap=True)

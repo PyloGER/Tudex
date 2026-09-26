@@ -7,11 +7,12 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.4.0-2fb3a3">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.1-2fb3a3">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
   <img alt="Qt" src="https://img.shields.io/badge/GUI-PySide6%20%2F%20Qt%206-41cd52">
+  <img alt="AI made mit Claude" src="https://img.shields.io/badge/AI%20made-mit%20Claude-d97757">
 </p>
 
 <p align="center">
@@ -58,7 +59,7 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 Voraussetzung: Arch Linux oder eine Arch-basierte Distribution mit `base-devel` und `git`.
 
 ```bash
-git clone https://github.com/DEIN-NAME/tuxdex.git
+git clone https://github.com/PyloGER/Tuxdex.git tuxdex
 cd tuxdex
 makepkg -si
 ```
@@ -139,9 +140,13 @@ Nach Änderungen an Dateien, die im `PKGBUILD` stehen, die Prüfsummen aktualisi
 updpkgsums   # aus pacman-contrib
 ```
 
+## Entstehung
+
+Tuxdex ist ein **KI-gestütztes Projekt (AI made)**: Idee, Anforderungen und Tests kommen von PyloGER (Voxellab), der Code, das Design und die Dokumentation sind in Zusammenarbeit mit **Claude** von Anthropic entstanden.
+
 ## Lizenz
 
-[MIT](LICENSE) © 2026 Manu
+[MIT](LICENSE) © 2026 PyloGER · Voxellab
 
 ---
 
