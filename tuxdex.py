@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -7073,9 +7073,34 @@ def _http_get(url, timeout=15):
         return r.read()
 
 
+def latest_commit(repo, branch):
+    """SHA des neuesten Commits auf dem Zweig – ohne Zwischenspeicher.
+    1. Git-Protokoll (wie „git ls-remote“, kein Abfragelimit), 2. GitHub-API als Reserve."""
+    try:
+        refs = _http_get(f"https://github.com/{repo}.git/info/refs?service=git-upload-pack",
+                         timeout=15).decode(errors="replace")
+        m = re.search(r"([0-9a-f]{40}) refs/heads/" + re.escape(branch) + r"(?:\n|\x00|$)", refs)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    try:
+        data = json.loads(_http_get(f"https://api.github.com/repos/{repo}/commits/{branch}",
+                                    timeout=15).decode())
+        sha = data.get("sha", "")
+        if re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha
+    except Exception:
+        pass
+    return None
+
+
 def remote_info(repo, branch):
-    """(version, changelog_markdown) des Repos"""
-    base = f"https://raw.githubusercontent.com/{repo}/{branch}"
+    """(version, changelog_markdown, commit) des Repos.
+    Liest die Dateien über die Commit-ID statt über den Zweignamen: raw.githubusercontent.com
+    speichert Zweig-Adressen bis zu 5 Minuten zwischen, Commit-Adressen ändern sich nie."""
+    sha = latest_commit(repo, branch)
+    base = f"https://raw.githubusercontent.com/{repo}/{sha or branch}"
     pkgb = _http_get(f"{base}/PKGBUILD").decode(errors="replace")
     m = re.search(r"^pkgver=([\w.]+)", pkgb, re.M)
     if not m:
@@ -7084,7 +7109,27 @@ def remote_info(repo, branch):
         cl = _http_get(f"{base}/CHANGELOG.md").decode(errors="replace")
     except Exception:
         cl = ""
-    return m.group(1), cl
+    return m.group(1), cl, sha
+
+
+def fetch_package_sources(repo, ref, dest):
+    """Lädt PKGBUILD und alle darin unter source=() genannten Dateien einzeln vom Commit `ref`."""
+    base = f"https://raw.githubusercontent.com/{repo}/{ref}"
+    pkgb = _http_get(f"{base}/PKGBUILD", timeout=30)
+    text = pkgb.decode(errors="replace")
+    if not re.search(r"^pkgname=tuxdex\b", text, re.M):
+        raise ValueError("Das PKGBUILD im Repository gehört nicht zu tuxdex")
+    m = re.search(r"^source=\((.*?)\)", text, re.S | re.M)
+    files = [f.strip("'\"") for f in (m.group(1).split() if m else [])]
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, "PKGBUILD"), "wb") as fh:
+        fh.write(pkgb)
+    for f in files:
+        if "/" in f or "::" in f or f.startswith(".") or not re.fullmatch(r"[\w.+-]+", f):
+            raise ValueError(f"unerwarteter Dateiname im PKGBUILD: {f}")
+        with open(os.path.join(dest, f), "wb") as fh:
+            fh.write(_http_get(f"{base}/{f}", timeout=60))
+    return dest
 
 
 def changes_since(changelog, current):
@@ -7098,7 +7143,9 @@ def changes_since(changelog, current):
                 out.append(f"<b>Version {h.group(1)}</b>")
             continue
         if keep and line.strip().startswith(("-", "*")):
-            item = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", line.strip()[1:].strip())
+            item = line.strip()[1:].strip().replace("&", "&amp;").replace("<", "&lt;")
+            item = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", item)
+            item = re.sub(r"`([^`]+)`", r"<code>\1</code>", item)
             out.append("• " + item)
     return "<br>".join(out)
 
@@ -7135,6 +7182,7 @@ class UpdatePanel(QWidget):
         self.app = app
         self.settings = load_settings()
         self.remote_version = None
+        self.remote_sha = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(16)
@@ -7238,7 +7286,8 @@ class UpdatePanel(QWidget):
 
         def worker():
             try:
-                ver, cl = remote_info(repo, branch)
+                ver, cl, sha = remote_info(repo, branch)
+                self.remote_sha = sha
                 res = (ver, cl, None)
             except Exception as e:
                 res = (None, "", str(e))
@@ -7281,18 +7330,13 @@ class UpdatePanel(QWidget):
         def worker():
             try:
                 if SYSTEM_INSTALL:
-                    import tarfile
-                    import io
-                    data = _http_get(f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{branch}", timeout=60)
-                    d = fresh_build_dir()
-                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
-                        _safe_extract(t, d)
-                    src = find_pkgbuild(d)
-                    if not src:
-                        raise ValueError("Kein PKGBUILD für tuxdex im Repository gefunden")
+                    ref = latest_commit(repo, branch) or branch
+                    ui(lambda r=ref: self.log.append_text(f"Commit {r[:7]} – lade Dateien …\n"))
+                    src = fetch_package_sources(repo, ref, os.path.join(fresh_build_dir(), "tuxdex"))
                     ui(lambda: self._build(src))
                 else:
-                    code = _http_get(f"https://raw.githubusercontent.com/{repo}/{branch}/tuxdex.py", timeout=60)
+                    ref = latest_commit(repo, branch) or branch
+                    code = _http_get(f"https://raw.githubusercontent.com/{repo}/{ref}/tuxdex.py", timeout=60)
                     ui(lambda: self._replace_script(code))
             except Exception as e:
                 ui(lambda m=str(e): (self.log.append_text(f"error: {m}\n"),
