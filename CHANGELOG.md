@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2
+- Updater erkennt neue Versionen sofort: Tuxdex fragt den neuesten Commit direkt ab, statt die bis zu 5 Minuten zwischengespeicherten Dateien von raw.githubusercontent.com zu lesen.
+- Update über GitHub lädt die Paketdateien gezielt vom neuesten Commit (robuster als das Archiv).
+- Neuerungen im Updater zeigen `Code` und Sonderzeichen korrekt an.
+
 ## 1.4.1
 - Update-Quelle ist fest auf github.com/PyloGER/Tuxdex eingestellt – der Updater findet neue Versionen jetzt ohne Einrichtung.
 - Einstellungen: Autor PyloGER, Unternehmen Voxellab, Kontakt contact@voxellab.de, Link zur Projektseite, Hinweis „AI made – mit Claude“.
