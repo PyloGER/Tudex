@@ -29,6 +29,9 @@ jobs:
         run: |
           ver=$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' tuxdex.py)
           echo "version=$ver" >> "$GITHUB_OUTPUT"
+          stage=$(sed -n 's/^APP_STAGE = "\([a-z]*\)".*/\1/p' tuxdex.py)
+          case "$ver" in *-*|"") label=$ver ;; *) label=$ver${stage:+-$stage} ;; esac
+          echo "label=$label" >> "$GITHUB_OUTPUT"
           section() { awk -v v="## $ver" '$0==v && !d{f=1;d=1;next} /^#/{f=0} f' "$1"; }
           section CHANGELOG.md > notes.md
           printf '\n**Installation:** siehe [README → Installation](https://github.com/%s#installation)\n' \
@@ -44,6 +47,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.v.outputs.version }}
+          LABEL: ${{ steps.v.outputs.label }}
         run: |
           if [ "${{ inputs.neu_anlegen }}" = "true" ] && gh release view "v$VER" >/dev/null 2>&1; then
             echo "Release v$VER wird neu angelegt."
@@ -51,12 +55,12 @@ jobs:
           fi
           if gh release view "v$VER" >/dev/null 2>&1; then
             echo "Release v$VER gibt es schon – Text wird aktualisiert."
-            gh release edit "v$VER" --notes-file notes.md
+            gh release edit "v$VER" --title "Tuxdex $LABEL" --notes-file notes.md
             exit 0
           fi
           pre=""
           case "$VER" in *-*) pre="--prerelease" ;; esac
-          gh release create "v$VER" --target "$GITHUB_SHA" --title "Tuxdex $VER" --notes-file notes.md $pre
+          gh release create "v$VER" --target "$GITHUB_SHA" --title "Tuxdex $LABEL" --notes-file notes.md $pre
 
   # Eigenes pacman-Repo: Paket + Datenbank hängen am Release.
   # Nutzer tragen in /etc/pacman.conf ein:  [tuxdex]  Server = https://github.com/<repo>/releases/latest/download
