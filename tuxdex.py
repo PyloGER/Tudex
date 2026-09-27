@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.10"
+APP_VERSION = "1.6.0-beta.11"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -433,6 +433,26 @@ def _write_asset(name, svg):
     return path
 
 
+def tuxdex_palette():
+    """Eigene Farbpalette – sonst malt das Desktop-Theme (z. B. KDE Breeze) Fensterflächen in seinen Farben,
+    und Texte in Dialogen stehen auf andersfarbigen Kästen."""
+    from PySide6.QtGui import QPalette
+    pal = QPalette()
+    c = lambda k: QColor(COLORS[k])
+    for role, key in ((QPalette.Window, "bg2"), (QPalette.WindowText, "ink"), (QPalette.Base, "bg0"),
+                      (QPalette.AlternateBase, "bg1"), (QPalette.Text, "ink"), (QPalette.Button, "bg3"),
+                      (QPalette.ButtonText, "ink"), (QPalette.BrightText, "ink"), (QPalette.ToolTipBase, "bg2"),
+                      (QPalette.ToolTipText, "ink"), (QPalette.Highlight, "accent"),
+                      (QPalette.HighlightedText, "on_accent"), (QPalette.PlaceholderText, "muted"),
+                      (QPalette.Link, "accent"), (QPalette.LinkVisited, "accent_h"), (QPalette.Light, "bg3"),
+                      (QPalette.Midlight, "bg3"), (QPalette.Mid, "line"), (QPalette.Dark, "bg1"),
+                      (QPalette.Shadow, "bg0")):
+        pal.setColor(role, c(key))
+    for role, key in ((QPalette.WindowText, "muted"), (QPalette.Text, "muted"), (QPalette.ButtonText, "muted")):
+        pal.setColor(QPalette.Disabled, role, c(key))
+    return pal
+
+
 def apply_theme(app):
     families = set(QFontDatabase.families())
 
@@ -458,6 +478,7 @@ def apply_theme(app):
         f'<path d="M2.5 4.5l3.5 3.5 3.5-3.5" fill="none" stroke="{COLORS["ink"]}" stroke-width="1.6" '
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'))
     app.setStyle("Fusion")
+    app.setPalette(tuxdex_palette())
     app.setStyleSheet(QSS.substitute(COLORS, check=check, arrow=arrow, sans=FONTS["sans"], mono=FONTS["mono"]))
 
 

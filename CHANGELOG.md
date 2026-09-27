@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.0-beta.11
+- Dialoge unter KDE: Texte stehen nicht mehr auf dunkleren Kästen. Tuxdex setzt jetzt eine eigene Farbpalette, statt die Fensterfarben des Desktop-Themes (Breeze) zu übernehmen – gilt auch für Menüs, Tooltips und Auswahlfarben.
+
 ## 1.6.0-beta.10
 - Sicherheit: neue **Checkliste für Wartung, Datenschutz & Performance** – prüft automatisch und bietet, wo sinnvoll, einen Knopf zum Beheben:
   - **Pakete & Updates**: Paketsignaturen (SigLevel), Alter der Mirrorliste (reflector), Fehler/Warnungen beim letzten Update in pacman.log, Neustart nach Kernel-Update.
