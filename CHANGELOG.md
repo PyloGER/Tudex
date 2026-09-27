@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.1.0-beta.2
+- **Eigenes pacman-Repository**: Jedes Release enthält jetzt das fertige Paket und eine Repo-Datenbank. Mit `[tuxdex]` in `/etc/pacman.conf` installiert und aktualisiert sich Tuxdex über `pacman -Syu` – ohne AUR (Anleitung im README).
 - **Alpha-Hinweis**: Vor der ersten Aktion mit root-Rechten erscheint einmal ein Hinweis („Alpha-Phase, Nutzung auf eigenes Risiko“). Erst nach Haken und „Akzeptieren“ führt Tuxdex root-Befehle aus – ohne Zustimmung wird jede root-Aktion abgebrochen, auch intern. Dazu ein dauerhaftes „ALPHA“-Abzeichen in der Kopfleiste und ein Hinweis im Passwort-Fenster.
 
 ## 1.1.0-beta.1

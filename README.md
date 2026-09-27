@@ -70,7 +70,27 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 
 ## Installation
 
-Voraussetzung: Arch Linux oder eine Arch-basierte Distribution mit `base-devel` und `git`.
+### Über pacman (empfohlen)
+
+Tuxdex hat ein eigenes pacman-Repository – ohne AUR, Updates kommen mit `pacman -Syu`. Einmal in `/etc/pacman.conf` ganz unten eintragen:
+
+```ini
+[tuxdex]
+SigLevel = Optional TrustAll
+Server = https://github.com/PyloGER/Tuxdex/releases/latest/download
+```
+
+Dann installieren:
+
+```bash
+sudo pacman -Sy tuxdex
+```
+
+`SigLevel = Optional TrustAll` heißt: Die Pakete sind (noch) nicht mit einem eigenen Schlüssel signiert, pacman vertraut der HTTPS-Verbindung zu GitHub. Sobald Signaturen verfügbar sind, steht hier, wie du den Schlüssel importierst.
+
+### Selbst bauen
+
+Voraussetzung: `base-devel` und `git`.
 
 ```bash
 git clone https://github.com/PyloGER/Tuxdex.git tuxdex

@@ -19,6 +19,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,3 +50,58 @@ jobs:
           pre=""
           case "$VER" in *-*) pre="--prerelease" ;; esac
           gh release create "v$VER" --target "$GITHUB_SHA" --title "Tuxdex $VER" --notes-file notes.md $pre
+
+  # Eigenes pacman-Repo: Paket + Datenbank hängen am Release.
+  # Nutzer tragen in /etc/pacman.conf ein:  [tuxdex]  Server = https://github.com/<repo>/releases/latest/download
+  pacman-repo:
+    needs: release
+    if: ${{ !contains(needs.release.outputs.version, '-') }}
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      HAS_KEY: ${{ secrets.PACMAN_GPG_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Paket bauen
+        run: |
+          pacman -Syu --noconfirm --needed github-cli git
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          # nur Paketieren – Laufzeit-Abhängigkeiten (PySide6 …) werden hier nicht gebraucht
+          su builder -c "cd '$GITHUB_WORKSPACE' && makepkg -d -f --noconfirm"
+
+      - name: Signieren (optional, wenn der Schlüssel als Secret hinterlegt ist)
+        if: ${{ env.HAS_KEY == 'true' }}
+        env:
+          GPG_KEY: ${{ secrets.PACMAN_GPG_KEY }}
+        run: |
+          echo "$GPG_KEY" | gpg --batch --import
+          for f in *.pkg.tar.zst; do gpg --batch --yes --detach-sign --no-armor "$f"; done
+          echo "SIGN=--sign" >> "$GITHUB_ENV"
+
+      - name: Repo-Datenbank anlegen
+        run: |
+          mkdir repo
+          for f in *.pkg.tar.zst; do
+            # GitHub ersetzt „:“ (Epoch) in Dateinamen – daher vorher selbst umbenennen
+            n=$(echo "$f" | tr ':' '.')
+            mv "$f" "repo/$n"
+            [ -f "$f.sig" ] && mv "$f.sig" "repo/$n.sig"
+          done
+          cd repo
+          repo-add $SIGN tuxdex.db.tar.gz *.pkg.tar.zst
+          # Release-Dateien können keine Verknüpfungen sein: echte Kopien unter den Namen, die pacman lädt
+          for x in db files; do
+            rm -f "tuxdex.$x"; cp "tuxdex.$x.tar.gz" "tuxdex.$x"
+            [ -f "tuxdex.$x.tar.gz.sig" ] && cp "tuxdex.$x.tar.gz.sig" "tuxdex.$x.sig"
+          done
+          ls -la
+
+      - name: An das Release hängen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.release.outputs.version }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gh release upload "v$VER" repo/* --clobber --repo "$GITHUB_REPOSITORY"
