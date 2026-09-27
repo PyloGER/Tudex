@@ -120,6 +120,7 @@ MODULES = [
     ("flatpak", "Flatpak", "#8fa8ff"),
     ("disks", "Datenträger", "#d9b95c"),
     ("storage", "Speicher", "#56c2d6"),
+    ("backup", "Backup", "#e9c46a"),
     ("swap", "Swap", "#6cc56f"),
     ("tasks", "Taskmanager", "#b5d86b"),
     ("antivirus", "Antivirus", "#a98bf0"),
@@ -7431,6 +7432,1321 @@ def svg_icon(svg, size=18):
 
 DEFAULT_REPO = "PyloGER/Tuxdex"   # GitHub-Repository für Updates (in den Einstellungen änderbar)
 DEFAULT_BRANCH = "main"
+# --------------------------------------------------------------------------
+# Backup: Snapshots (rsync + Hardlinks), Spiegel, komprimierte Archive –
+# auf mehrere Ziele gleichzeitig. Ohne Qt, damit der Zeitplan (tuxdex --backup)
+# auch ohne Fenster läuft.
+# --------------------------------------------------------------------------
+
+BACKUP_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "backup.json")
+BACKUP_DIRNAME = "Tuxdex-Backup"
+BACKUP_TS = "%Y-%m-%d_%H%M%S"
+BACKUP_DEFAULTS = {
+    "sources": [os.path.expanduser("~")],
+    "excludes": ["~/.cache", "~/.local/share/Trash", "~/.local/share/Steam/steamapps"],
+    "targets": [], "disabled": [], "mode": "snapshot", "compression": "zstd", "level": "standard",
+    "keep": 10, "verify": True, "delete": True, "root": False, "encrypt": False, "schedule": "off",
+    "history": [],
+}
+# Dateisysteme mit Linux-Rechten und Hardlinks (Snapshots möglich)
+LINUX_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "jfs", "reiserfs", "zfs", "bcachefs", "nilfs2"}
+FAT_FS = {"vfat", "msdos", "fat"}                  # 4-GB-Grenze je Datei → Archive werden geteilt
+PART_SIZE = 4000 * 1024 * 1024
+# name: (Programm, Endung, Stufen, Optionen fürs Packen, Befehl zum Entpacken)
+COMPRESSORS = {
+    "zstd": ("zstd", ".tar.zst", {"schnell": ["-1"], "standard": ["-6"], "stark": ["-19"]},
+             ["-T0", "-q", "-c"], ["zstd", "-d", "-q", "-c"]),
+    "xz": ("xz", ".tar.xz", {"schnell": ["-1"], "standard": ["-6"], "stark": ["-9e"]},
+           ["-T0", "-c"], ["xz", "-d", "-c"]),
+    "gzip": ("pigz" if shutil.which("pigz") else "gzip", ".tar.gz", {"schnell": ["-1"], "standard": ["-6"],
+                                                                   "stark": ["-9"]}, ["-c"], ["gzip", "-d", "-c"]),
+    "none": (None, ".tar", {}, [], None),
+}
+ARCHIVE_RE = re.compile(r"^(?P<base>.+?(?P<ext>\.tar(?:\.zst|\.xz|\.gz)?)(?P<gpg>\.gpg)?)(?:\.part(?P<part>\d{3}))?$")
+
+
+def backup_load():
+    cfg = dict(BACKUP_DEFAULTS)
+    cfg.update(_load_json(BACKUP_FILE, {}))
+    return cfg
+
+
+def backup_save(cfg):
+    _save_json(BACKUP_FILE, cfg)
+
+
+def backup_host():
+    import socket
+    return re.sub(r"[^\w.-]", "_", socket.gethostname() or "linux")
+
+
+def fs_info(path):
+    """(Dateisystem, freie Bytes, Einhängepunkt) – (None, 0, None), wenn nicht erreichbar."""
+    if not os.path.isdir(path):
+        return None, 0, None
+    try:
+        st = os.statvfs(path)
+        free = st.f_bavail * st.f_frsize
+    except OSError:
+        return None, 0, None
+    try:
+        out = subprocess.run(["findmnt", "-n", "-o", "FSTYPE,TARGET", "--target", path], capture_output=True,
+                             text=True, timeout=5).stdout.split(None, 1)
+        return out[0], free, out[1].strip() if len(out) > 1 else None
+    except Exception:
+        return "?", free, None
+
+
+def backup_dir(target):
+    return os.path.join(target, BACKUP_DIRNAME, backup_host())
+
+
+def _expand(p):
+    return os.path.normpath(os.path.expanduser(p.strip()))
+
+
+def list_backups(target):
+    """Alle Backups auf einem Ziel, neueste zuerst: dict(kind, name, path, when, size, parts, encrypted)."""
+    base = backup_dir(target)
+    res = []
+    snaps = os.path.join(base, "snapshots")
+    if os.path.isdir(snaps):
+        for n in os.listdir(snaps):
+            try:
+                when = datetime.strptime(n, BACKUP_TS)
+            except ValueError:
+                continue
+            res.append({"kind": "snapshot", "name": n, "path": os.path.join(snaps, n), "when": when,
+                        "size": None, "parts": [], "encrypted": False})
+    mirror = os.path.join(base, "mirror")
+    if os.path.isdir(mirror):
+        stamp = os.path.join(base, ".mirror-stamp")
+        when = datetime.fromtimestamp(os.path.getmtime(stamp if os.path.exists(stamp) else mirror))
+        res.append({"kind": "mirror", "name": "Spiegel", "path": mirror, "when": when, "size": None,
+                    "parts": [], "encrypted": False})
+    arch = os.path.join(base, "archives")
+    if os.path.isdir(arch):
+        groups = {}
+        for n in sorted(os.listdir(arch)):
+            m = ARCHIVE_RE.match(n)
+            if not m or n.endswith(".partial"):
+                continue
+            groups.setdefault(m.group("base"), []).append(os.path.join(arch, n))
+        for b, parts in groups.items():
+            m = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{6})\.tar", b)
+            try:
+                when = datetime.strptime(m.group(1), BACKUP_TS) if m else datetime.fromtimestamp(
+                    os.path.getmtime(parts[0]))
+            except ValueError:
+                when = datetime.fromtimestamp(os.path.getmtime(parts[0]))
+            res.append({"kind": "archive", "name": b, "path": parts[0], "when": when,
+                        "size": sum(os.path.getsize(p) for p in parts), "parts": parts,
+                        "encrypted": b.endswith(".gpg")})
+    return sorted(res, key=lambda r: r["when"], reverse=True)
+
+
+def estimate_size(sources, excludes, use_sudo=False):
+    """Bytes aller Quellen ohne Ausnahmen (du)."""
+    cmd = (["sudo", "-n"] if use_sudo else []) + ["du", "-scb"] + [f"--exclude={e}" for e in excludes] + sources
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=900).stdout.strip().splitlines()
+        return int(out[-1].split()[0]) if out else 0
+    except Exception:
+        return 0
+
+
+class _PartWriter:
+    """Schreibt einen Datenstrom in eine Datei – auf FAT in 4-GB-Teile (.part001, .part002 …)."""
+
+    def __init__(self, path, split):
+        self.path, self.split = path, split
+        self.files, self.fh, self.cur, self.written = [], None, 0, 0
+        self._next()
+
+    def _next(self):
+        if self.fh:
+            self.fh.close()
+        name = (f"{self.path}.part{len(self.files) + 1:03d}" if self.split else self.path) + ".partial"
+        self.files.append(name)
+        self.fh = open(name, "wb")
+        self.cur = 0
+
+    def write(self, data):
+        while data:
+            if self.split and self.cur >= PART_SIZE:
+                self._next()
+            n = len(data) if not self.split else min(len(data), PART_SIZE - self.cur)
+            self.fh.write(data[:n])
+            self.cur += n
+            self.written += n
+            data = data[n:]
+
+    def close(self):
+        if self.fh:
+            self.fh.close()
+            self.fh = None
+
+    def finish(self):
+        self.close()
+        final = []
+        for f in self.files:
+            os.replace(f, f[:-len(".partial")])
+            final.append(f[:-len(".partial")])
+        if self.split and len(final) == 1:          # nur ein Teil → normaler Dateiname
+            os.replace(final[0], self.path)
+            final = [self.path]
+        self.files = final
+        return final
+
+    def discard(self):
+        self.close()
+        for f in self.files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+class BackupJob:
+    """Führt ein Backup auf mehrere Ziele gleichzeitig aus.
+    on_progress(ziel, dict) · on_log(text) · on_done(ok, zusammenfassung) – werden aus Threads aufgerufen."""
+
+    RSYNC_RE = re.compile(r"^\s*([\d,.]+)\s+(\d+)%\s+(\S+/s)\s+(\d+:\d{2}:\d{2})")
+
+    def __init__(self, cfg, targets, on_progress, on_log, on_done, passphrase=None, use_sudo=False):
+        self.cfg, self.targets = cfg, targets
+        self.on_progress, self.on_log, self.on_done = on_progress, on_log, on_done
+        self.passphrase, self.use_sudo = passphrase, use_sudo
+        self.procs, self.cancelled = [], False
+        self.ts = datetime.now().strftime(BACKUP_TS)
+        self.results = {}
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def cancel(self):
+        self.cancelled = True
+        for p in list(self.procs):
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception:
+                pass
+
+    def _sudo(self):
+        return ["sudo", "-n"] if self.use_sudo else []
+
+    def _popen(self, cmd, **kw):
+        p = subprocess.Popen(cmd, **kw)
+        self.procs.append(p)
+        return p
+
+    def _prog(self, t, **kw):
+        self.on_progress(t, kw)
+
+    # ---- Ablauf ----
+    def _run(self):
+        t0 = time.time()
+        cfg = self.cfg
+        self.sources = [s for s in (_expand(x) for x in cfg["sources"]) if os.path.exists(s)]
+        self.excludes = [_expand(e) for e in cfg["excludes"] if e.strip()]
+        # Ziele, die in einer Quelle liegen, nicht mitsichern (sonst sichert sich das Backup selbst)
+        for t in self.targets:
+            bd = os.path.join(t, BACKUP_DIRNAME)
+            if any(bd == s or bd.startswith(s.rstrip("/") + "/") for s in self.sources):
+                self.excludes.append(bd)
+        if not self.sources:
+            self.on_log("Keine vorhandenen Quellen ausgewählt.\n")
+            self.on_done(False, "Keine Quellen")
+            return
+        self.on_log(f"Quellen: {', '.join(short_path(s) for s in self.sources)}\n"
+                    f"Ausnahmen: {', '.join(short_path(e) for e in self.excludes) or '—'}\n")
+        for t in self.targets:
+            self._prog(t, state="wait", msg="Umfang wird berechnet …")
+        self.total = estimate_size(self.sources, self.excludes, self.use_sudo)
+        self.on_log(f"Umfang: {fmt_bytes(self.total)}\n")
+        if self.cancelled:
+            self.on_done(False, "Abgebrochen")
+            return
+        if self.cfg["mode"] == "archive":
+            self._archive()
+        else:
+            threads = [threading.Thread(target=self._rsync, args=(t,), daemon=True) for t in self.targets]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        ok = [t for t, r in self.results.items() if r == "ok"]
+        dur = int(time.time() - t0)
+        summary = (f"{len(ok)} von {len(self.targets)} Zielen erfolgreich · {fmt_bytes(self.total)} · "
+                   f"Dauer {dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}")
+        if not self.cancelled:
+            cfg = backup_load()
+            cfg["history"] = ([{"at": time.time(), "mode": self.cfg["mode"], "targets": self.targets,
+                                "ok": len(ok), "size": self.total, "dur": dur}] + cfg.get("history", []))[:30]
+            backup_save(cfg)
+        self.on_done(bool(ok) and len(ok) == len(self.targets) and not self.cancelled,
+                     "Abgebrochen" if self.cancelled else summary)
+
+    # ---- Snapshot / Spiegel (rsync, je Ziel ein Prozess) ----
+    def _rsync(self, target):
+        mode = self.cfg["mode"]
+        fstype, free, _ = fs_info(target)
+        base = backup_dir(target)
+        linux = fstype in LINUX_FS
+        if mode == "snapshot" and not linux:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"Snapshots brauchen ein Linux-Dateisystem (ist: {fstype}). "
+                                                  "Für dieses Ziel „Archiv“ nutzen.")
+            return
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError as e:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"Ordner kann nicht angelegt werden: {e.strerror}")
+            return
+        opts = ["-aHAXR", "--numeric-ids"] if linux else ["-rtR", "--modify-window=2"]
+        cmd = self._sudo() + ["rsync"] + opts + ["--info=progress2", "--no-inc-recursive", "--partial"]
+        cmd += [f"--exclude={e}" for e in self.excludes]
+        if mode == "snapshot":
+            snaps = os.path.join(base, "snapshots")
+            os.makedirs(snaps, exist_ok=True)
+            prev = [b for b in list_backups(target) if b["kind"] == "snapshot"]
+            if prev:
+                cmd.append(f"--link-dest={prev[0]['path']}")
+            dest = os.path.join(snaps, self.ts + ".partial")
+        else:
+            dest = os.path.join(base, "mirror")
+            if self.cfg.get("delete", True):
+                cmd += ["--delete", "--delete-excluded"]
+        cmd += self.sources + [dest + "/"]
+        self.on_log(f"[{short_path(target)}] $ {' '.join(shlex.quote(c) for c in cmd)}\n")
+        self._prog(target, state="run", msg="Startet …")
+        t0 = time.time()
+        try:
+            p = self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "LC_ALL": "C"})
+        except Exception as e:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=str(e))
+            return
+        errs = []
+        threading.Thread(target=lambda: errs.extend(p.stderr.read().decode(errors="replace").splitlines()),
+                         daemon=True).start()
+        buf = b""
+        while True:
+            ch = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else p.stdout.read(4096)
+            if not ch:
+                break
+            buf += ch
+            *lines, buf = re.split(rb"[\r\n]", buf)
+            for ln in lines:
+                m = self.RSYNC_RE.match(ln.decode(errors="replace"))
+                if m:
+                    done = int(m.group(1).replace(",", "").replace(".", ""))
+                    self._prog(target, state="run", pct=int(m.group(2)), done=done, speed=m.group(3),
+                               eta=m.group(4), el=time.time() - t0)
+        rc = p.wait()
+        time.sleep(0.2)
+        for e in errs[:30]:
+            self.on_log(f"[{short_path(target)}] {e}\n")
+        if (self.cancelled or rc not in (0, 23, 24)) and mode == "snapshot":
+            self._run_quiet(self._sudo() + ["rm", "-rf", "--", dest])
+        if self.cancelled:
+            self.results[target] = "cancel"
+            self._prog(target, state="error", msg="Abgebrochen")
+            return
+        if rc not in (0, 23, 24):
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"rsync-Fehler (Code {rc}) – Details in der Ausgabe.")
+            return
+        note = ""
+        if rc == 23:
+            note = " · einige Dateien nicht lesbar (ggf. mit root-Rechten sichern)"
+        elif rc == 24:
+            note = " · einige Dateien verschwanden während des Backups"
+        if mode == "snapshot":
+            final = dest[:-len(".partial")]
+            self._run_quiet(self._sudo() + ["mv", dest, final])
+            link = os.path.join(base, "latest")
+            try:
+                if os.path.islink(link):
+                    os.remove(link)
+                os.symlink(os.path.join("snapshots", self.ts), link)
+            except OSError:
+                pass
+            self._retention(target)
+        else:
+            try:
+                with open(os.path.join(base, ".mirror-stamp"), "w") as f:
+                    f.write(self.ts)
+            except OSError:
+                pass
+        self.results[target] = "ok"
+        self._prog(target, state="ok", pct=100, msg="Fertig" + note, el=time.time() - t0)
+
+    def _run_quiet(self, cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=3600).returncode
+        except Exception:
+            return 1
+
+    def _retention(self, target):
+        keep = int(self.cfg.get("keep", 10) or 0)
+        if keep <= 0:
+            return
+        kind = "archive" if self.cfg["mode"] == "archive" else "snapshot"
+        old = [b for b in list_backups(target) if b["kind"] == kind][keep:]
+        for b in old:
+            self.on_log(f"[{short_path(target)}] Alte Version entfernt: {b['name']}\n")
+            if kind == "snapshot":
+                self._run_quiet(self._sudo() + ["rm", "-rf", "--", b["path"]])
+            else:
+                for p in b["parts"] + [b["parts"][0].split(".part")[0] + ".sha256"]:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+
+    # ---- Archiv: einmal packen, gleichzeitig auf alle Ziele schreiben ----
+    def _archive(self):
+        import hashlib
+        prog, ext, levels, popts, _ = COMPRESSORS.get(self.cfg.get("compression"), COMPRESSORS["zstd"])
+        enc = bool(self.passphrase)
+        name = f"{backup_host()}_{self.ts}{ext}" + (".gpg" if enc else "")
+        writers = {}
+        for t in self.targets:
+            fstype, free, _ = fs_info(t)
+            d = os.path.join(backup_dir(t), "archives")
+            try:
+                os.makedirs(d, exist_ok=True)
+                writers[t] = _PartWriter(os.path.join(d, name), fstype in FAT_FS)
+                self._prog(t, state="run", msg="Packt …" + (" (in 4-GB-Teilen wegen FAT32)" if fstype in FAT_FS
+                                                             else ""))
+            except OSError as e:
+                self.results[t] = "error"
+                self._prog(t, state="error", msg=f"Kann nicht schreiben: {e.strerror}")
+        if not writers:
+            return
+        rel = [s.lstrip("/") or "." for s in self.sources]
+        tar = self._sudo() + ["tar", "-cpf", "-", "--xattrs", "--acls", "--ignore-failed-read",
+                              "--warning=no-file-changed", "-C", "/", "--anchored"]
+        tar += [f"--exclude={e.lstrip('/')}" for e in self.excludes] + ["--"] + rel
+        self.on_log(f"$ {' '.join(shlex.quote(c) for c in tar)}"
+                    + (f" | {prog} {' '.join(levels.get(self.cfg.get('level'), []))}" if prog else "")
+                    + (" | gpg --symmetric (AES-256)" if enc else "") + "\n")
+        errs = []
+        try:
+            p_tar = self._popen(tar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            threading.Thread(target=lambda: errs.extend(p_tar.stderr.read().decode(errors="replace").splitlines()),
+                             daemon=True).start()
+            stages, src = [], None
+            if prog:
+                p_c = self._popen([prog] + levels.get(self.cfg.get("level"), []) + popts, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE)
+                stages.append(p_c)
+            if enc:
+                r, w = os.pipe()
+                os.write(w, self.passphrase.encode())
+                os.close(w)
+                p_g = self._popen(["gpg", "--batch", "--yes", "--quiet", "--pinentry-mode", "loopback",
+                                   "--passphrase-fd", str(r), "--symmetric", "--cipher-algo", "AES256",
+                                   "--compress-algo", "none", "-o", "-"],
+                                  stdin=stages[-1].stdout if stages else subprocess.PIPE, stdout=subprocess.PIPE,
+                                  pass_fds=(r,))
+                os.close(r)
+                if stages:
+                    stages[-1].stdout.close()
+                stages.append(p_g)
+        except Exception as e:
+            for w in writers.values():
+                w.discard()
+            for t in writers:
+                self.results[t] = "error"
+                self._prog(t, state="error", msg=f"Start fehlgeschlagen: {e}")
+            return
+        first_in = stages[0].stdin if stages else None
+        last_out = stages[-1].stdout if stages else p_tar.stdout
+        state = {"read": 0}
+        t0 = time.time()
+
+        def pump():                         # tar → Packer (zählt die unkomprimierten Bytes)
+            try:
+                while True:
+                    ch = p_tar.stdout.read(1 << 20)
+                    if not ch:
+                        break
+                    state["read"] += len(ch)
+                    first_in.write(ch)
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            finally:
+                try:
+                    first_in.close()
+                except Exception:
+                    pass
+        if first_in:
+            threading.Thread(target=pump, daemon=True).start()
+        h = hashlib.sha256()
+        failed = {}
+        last_ui = 0
+        while True:
+            ch = last_out.read(1 << 20)
+            if not ch:
+                break
+            if not first_in:
+                state["read"] += len(ch)
+            h.update(ch)
+            for t, w in list(writers.items()):
+                if t in failed:
+                    continue
+                try:
+                    w.write(ch)
+                except OSError as e:
+                    failed[t] = "Ziel ist voll" if e.errno == 28 else f"Schreibfehler: {e.strerror}"
+                    self._prog(t, state="error", msg=failed[t])
+                    w.discard()
+            if len(failed) == len(writers):
+                self.cancel()
+                break
+            now = time.time()
+            if now - last_ui > 0.5:
+                last_ui = now
+                el = now - t0
+                rd = state["read"]
+                spd = rd / el if el > 0 else 0
+                pct = min(99, int(rd / self.total * 100)) if self.total else 0
+                eta = (self.total - rd) / spd if spd > 0 and self.total > rd else 0
+                for t, w in writers.items():
+                    if t not in failed:
+                        self._prog(t, state="run", pct=pct, done=rd, speed=f"{fmt_bytes(spd)}/s",
+                                   eta=f"{int(eta) // 3600}:{int(eta) // 60 % 60:02d}:{int(eta) % 60:02d}",
+                                   el=el, written=w.written)
+        rc_tar = p_tar.wait()
+        rcs = [s.wait() for s in stages]
+        for e in errs[:30]:
+            self.on_log(f"tar: {e}\n")
+        broken = self.cancelled or rc_tar not in (0, 1) or any(rcs)
+        digest = h.hexdigest()
+        ok_targets = []
+        for t, w in writers.items():
+            if t in failed:
+                self.results[t] = "error"
+                continue
+            if broken:
+                w.discard()
+                self.results[t] = "cancel" if self.cancelled else "error"
+                self._prog(t, state="error", msg="Abgebrochen" if self.cancelled else
+                           f"Packen fehlgeschlagen (tar {rc_tar}, Packer {rcs}) – Details in der Ausgabe.")
+                continue
+            files = w.finish()
+            try:
+                with open(os.path.join(os.path.dirname(w.path), name + ".sha256"), "w") as f:
+                    f.write(f"{digest}  {name}\n")
+            except OSError:
+                pass
+            ok_targets.append((t, files, w.written))
+        if broken:
+            return
+
+        def verify(t, files, size):
+            if self.cfg.get("verify", True):
+                self._prog(t, state="run", pct=100, msg="Prüfe geschriebene Daten …")
+                hv = hashlib.sha256()
+                try:
+                    for fpath in files:
+                        with open(fpath, "rb") as f:
+                            for ch in iter(lambda: f.read(1 << 20), b""):
+                                hv.update(ch)
+                except OSError as e:
+                    hv = None
+                    self.on_log(f"[{short_path(t)}] Prüfung fehlgeschlagen: {e}\n")
+                if not hv or hv.hexdigest() != digest:
+                    self.results[t] = "error"
+                    self._prog(t, state="error", msg="Prüfsumme stimmt nicht – Datenträger defekt?")
+                    return
+            self._retention(t)
+            self.results[t] = "ok"
+            note = f" · {len(files)} Teile" if len(files) > 1 else ""
+            ratio = f" · {size / self.total * 100:.0f} % der Originalgröße" if self.total else ""
+            self._prog(t, state="ok", pct=100, el=time.time() - t0, written=size,
+                       msg=f"Fertig · {fmt_bytes(size)}{ratio}{note}"
+                       + (" · geprüft" if self.cfg.get("verify", True) else ""))
+        ths = [threading.Thread(target=verify, args=a, daemon=True) for a in ok_targets]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+
+
+def restore_command(b, dest, use_sudo, passfile=None):
+    """Shell-Befehl, der ein Backup nach dest zurückspielt (dest="/" = Originalort)."""
+    sudo = "sudo -n " if use_sudo else ""
+    q = shlex.quote
+    if b["kind"] in ("snapshot", "mirror"):
+        return f"{sudo}rsync -aHAX --info=progress2 {q(b['path'].rstrip('/') + '/')} {q(dest.rstrip('/') + '/')}"
+    m = ARCHIVE_RE.match(os.path.basename(b["parts"][0]))
+    ext = m.group("ext") if m else ".tar"
+    dec = next((c[4] for c in COMPRESSORS.values() if c[1] == ext), None)
+    cmd = "cat " + " ".join(q(p) for p in b["parts"])
+    if b["encrypted"]:
+        cmd += f" | gpg --batch --quiet --pinentry-mode loopback --passphrase-file {q(passfile)} -d"
+    if dec:
+        cmd += " | " + " ".join(dec)
+    return cmd + f" | {sudo}tar -xpf - --xattrs --acls -C {q(dest)}"
+
+
+def run_backup_cli():
+    """tuxdex --backup: Backup ohne Fenster (für den Zeitplan)."""
+    cfg = backup_load()
+    if cfg["mode"] == "archive" and cfg.get("encrypt"):
+        print("Verschlüsselte Archive brauchen ein Passwort und laufen nur aus dem Fenster.")
+        return 2
+    targets = [t for t in cfg["targets"] if t not in cfg.get("disabled", []) and os.path.isdir(t)]
+    skipped = [t for t in cfg["targets"] if t not in targets and t not in cfg.get("disabled", [])]
+    for t in skipped:
+        print(f"Übersprungen (nicht angeschlossen): {t}")
+    if not targets:
+        print("Kein Ziel erreichbar – nichts zu tun.")
+        return 1
+    done = threading.Event()
+    res = {}
+    job = BackupJob(cfg, targets, lambda t, d: d.get("state") in ("ok", "error") and print(
+                    f"[{t}] {d.get('msg', '')}", flush=True),
+                    lambda s: print(s, end="", flush=True),
+                    lambda ok, s: (res.update(ok=ok, s=s), done.set()))
+    job.start()
+    done.wait()
+    print(res.get("s", ""))
+    if which("notify-send"):
+        subprocess.run(["notify-send", "-a", "Tuxdex", "-i", "tuxdex",
+                        "Backup fertig" if res.get("ok") else "Backup mit Problemen", res.get("s", "")])
+    return 0 if res.get("ok") else 1
+
+
+SYSTEMD_USER = os.path.join(os.path.expanduser("~/.config"), "systemd", "user")
+
+
+def backup_schedule_state():
+    """(aktiv, nächster Lauf als Text)"""
+    try:
+        r = subprocess.run(["systemctl", "--user", "list-timers", "tuxdex-backup.timer", "--no-legend"],
+                           capture_output=True, text=True, timeout=5).stdout.strip()
+        if not r:
+            return False, ""
+        return True, " ".join(r.split()[:4])
+    except Exception:
+        return False, ""
+
+
+def backup_schedule_set(when):
+    """when: off | daily | weekly. Gibt (ok, text) zurück."""
+    timer = os.path.join(SYSTEMD_USER, "tuxdex-backup.timer")
+    service = os.path.join(SYSTEMD_USER, "tuxdex-backup.service")
+    if when == "off":
+        subprocess.run(["systemctl", "--user", "disable", "--now", "tuxdex-backup.timer"], capture_output=True)
+        for f in (timer, service):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        return True, "Zeitplan aus"
+    exe = "/usr/bin/tuxdex" if SYSTEM_INSTALL else f"/usr/bin/python3 {os.path.abspath(__file__)}"
+    os.makedirs(SYSTEMD_USER, exist_ok=True)
+    with open(service, "w") as f:
+        f.write("[Unit]\nDescription=Tuxdex Backup\n\n[Service]\nType=oneshot\n"
+                f"ExecStart={exe} --backup\nNice=10\nIOSchedulingClass=idle\n")
+    with open(timer, "w") as f:
+        f.write(f"[Unit]\nDescription=Tuxdex Backup ({when})\n\n[Timer]\n"
+                f"OnCalendar={'daily' if when == 'daily' else 'weekly'}\nPersistent=true\n"
+                "RandomizedDelaySec=15min\n\n[Install]\nWantedBy=timers.target\n")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    r = subprocess.run(["systemctl", "--user", "enable", "--now", "tuxdex-backup.timer"], capture_output=True,
+                       text=True)
+    return r.returncode == 0, (r.stderr.strip() or "Zeitplan aktiv")
+
+
+class BackupTab(Page):
+    MODES = [("snapshot", "Snapshots"), ("mirror", "Spiegel"), ("archive", "Archiv")]
+    MODE_HINT = {
+        "snapshot": "Jedes Backup ist eine eigene Version (Datum/Uhrzeit). Unveränderte Dateien werden nur "
+                    "verlinkt und kosten keinen Platz – wie Time Machine. Braucht ext4, btrfs, xfs …",
+        "mirror": "Eine 1:1-Kopie, die bei jedem Lauf nur die Änderungen überträgt. Schnell, aber nur ein Stand.",
+        "archive": "Eine einzige komprimierte Datei pro Backup, optional mit Passwort. Wird einmal gepackt und "
+                   "gleichzeitig auf alle Ziele geschrieben. Passt auf jeden Datenträger (FAT32: 4-GB-Teile).",
+    }
+    KEEP = [(3, "3"), (5, "5"), (10, "10"), (20, "20"), (50, "50"), (0, "alle")]
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.cfg = backup_load()
+        self.job = None
+        self.rows = {}
+
+        self.badge = StatusBadge("off", "…")
+        self.lay.addLayout(page_header("Backup", self.badge))
+
+        # ---------- Was ----------
+        src = Panel("Was sichern?", [Button("Home-Ordner", "ghost", lambda: self._add_source("~")),
+                                      Button("Systemeinstellungen (/etc)", "ghost", lambda: self._add_source("/etc")),
+                                      Button("Ordner hinzufügen …", "ghost", self._pick_source)])
+        self.src_list = QListWidget()
+        self.src_list.setMaximumHeight(110)
+        self.src_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        src.body.addWidget(self.src_list)
+        sb = QHBoxLayout()
+        sb.addWidget(Button("Ausgewählte entfernen", "ghost", self._del_source))
+        sb.addStretch(1)
+        self.size_lbl = Label("", "Muted")
+        sb.addWidget(self.size_lbl)
+        sb.addWidget(Button("Größe berechnen", "ghost", self._estimate))
+        src.body.addLayout(sb)
+        self.excl = QPlainTextEdit()
+        self.excl.setObjectName("Log")
+        self.excl.setFont(QFont(FONTS["mono"], 10))
+        self.excl.setMaximumHeight(80)
+        self.excl.setPlaceholderText("Ein Pfad pro Zeile, z. B. ~/.cache")
+        src.body.addLayout(Field("Nicht sichern (ein Pfad pro Zeile)", self.excl))
+        self.lay.addWidget(src)
+
+        # ---------- Wohin ----------
+        tg = Panel("Wohin? – alle angehakten Ziele werden gleichzeitig beschrieben")
+        self.tg_box = QVBoxLayout()
+        self.tg_box.setSpacing(6)
+        tg.body.addLayout(self.tg_box)
+        tb = QHBoxLayout()
+        tb.setSpacing(8)
+        self.drive_cb = QComboBox()
+        self.drive_cb.setMinimumWidth(320)
+        self.drive_cb.setMinimumHeight(38)
+        tb.addWidget(self.drive_cb, 1)
+        tb.addWidget(Button("Laufwerk hinzufügen", "ghost", self._add_drive))
+        tb.addWidget(Button("Ordner wählen …", "ghost", self._pick_target))
+        tb.addWidget(Button("↻", "icon", self.refresh_targets, "Laufwerke neu einlesen"))
+        tg.body.addLayout(tb)
+        tg.body.addWidget(Label(f"Backups liegen auf dem Ziel im Ordner {BACKUP_DIRNAME}/{backup_host()}/.",
+                                "Hint", wrap=True))
+        self.lay.addWidget(tg)
+
+        # ---------- Wie ----------
+        how = Panel("Wie?")
+        mrow = QHBoxLayout()
+        self.seg = Segmented([m[1] for m in self.MODES], self._mode_changed)
+        mrow.addWidget(self.seg)
+        mrow.addStretch(1)
+        how.body.addLayout(mrow)
+        self.mode_hint = Label("", "Hint", wrap=True)
+        how.body.addWidget(self.mode_hint)
+        opts = QGridLayout()
+        opts.setHorizontalSpacing(24)
+        opts.setVerticalSpacing(8)
+        self.cb_comp = QComboBox()
+        for k, t in (("zstd", "zstd – schnell, gut (empfohlen)"), ("xz", "xz – am kleinsten, langsam"),
+                     ("gzip", "gzip – überall lesbar"), ("none", "keine Kompression")):
+            if k == "none" or which(COMPRESSORS[k][0]):
+                self.cb_comp.addItem(t, k)
+        self.cb_level = QComboBox()
+        for k, t in (("schnell", "Schnell"), ("standard", "Ausgewogen"), ("stark", "Maximal (langsam)")):
+            self.cb_level.addItem(t, k)
+        self.cb_keep = QComboBox()
+        for k, t in self.KEEP:
+            self.cb_keep.addItem(t, k)
+        for cb in (self.cb_comp, self.cb_level, self.cb_keep):
+            cb.setMinimumHeight(38)
+        self.f_comp = QWidget()
+        self.f_comp.setLayout(Field("Kompression", self.cb_comp))
+        self.f_level = QWidget()
+        self.f_level.setLayout(Field("Stärke", self.cb_level))
+        self.f_keep = QWidget()
+        self.f_keep.setLayout(Field("Versionen behalten", self.cb_keep))
+        opts.addWidget(self.f_comp, 0, 0)
+        opts.addWidget(self.f_level, 0, 1)
+        opts.addWidget(self.f_keep, 0, 2)
+        opts.setColumnStretch(3, 1)
+        how.body.addLayout(opts)
+        self.o_enc = QCheckBox("Mit Passwort verschlüsseln (AES-256, gpg)")
+        self.o_enc.setEnabled(which("gpg"))
+        self.pw1 = LineEdit(placeholder="Passwort")
+        self.pw2 = LineEdit(placeholder="Passwort wiederholen")
+        for pw in (self.pw1, self.pw2):
+            pw.setEchoMode(QLineEdit.Password)
+            pw.setMaximumWidth(260)
+        erow = QHBoxLayout()
+        erow.setSpacing(8)
+        erow.addWidget(self.o_enc)
+        erow.addWidget(self.pw1)
+        erow.addWidget(self.pw2)
+        erow.addStretch(1)
+        self.enc_row = QWidget()
+        self.enc_row.setLayout(erow)
+        erow.setContentsMargins(0, 0, 0, 0)
+        how.body.addWidget(self.enc_row)
+        self.o_enc.toggled.connect(lambda v: (self.pw1.setVisible(v), self.pw2.setVisible(v)))
+        self.o_verify = QCheckBox("Nach dem Schreiben prüfen (liest das Archiv zurück und vergleicht die Prüfsumme)")
+        self.o_delete = QCheckBox("Im Original gelöschte Dateien auch im Spiegel löschen")
+        self.o_root = QCheckBox("Mit root-Rechten (nötig für Systemordner wie /etc)")
+        for w in (self.o_verify, self.o_delete, self.o_root):
+            how.body.addWidget(w)
+        brow = QHBoxLayout()
+        self.b_start = Button("Backup starten", "primary", self.start)
+        self.b_cancel = Button("Abbrechen", "danger", self.cancel)
+        self.b_cancel.hide()
+        brow.addWidget(self.b_start)
+        brow.addWidget(self.b_cancel)
+        brow.addStretch(1)
+        how.body.addLayout(brow)
+        self.lay.addWidget(how)
+
+        # ---------- Fortschritt ----------
+        self.prog_panel = Panel("Fortschritt")
+        ph = QHBoxLayout()
+        ph.setSpacing(12)
+        self.run_badge = StatusBadge("off", "Bereit")
+        ph.addWidget(self.run_badge)
+        self.run_time = Label("", "Value")
+        ph.addWidget(self.run_time)
+        ph.addStretch(1)
+        self.prog_panel.body.addLayout(ph)
+        self.prog_box = QVBoxLayout()
+        self.prog_box.setSpacing(10)
+        self.prog_panel.body.addLayout(self.prog_box)
+        self.prog_panel.hide()
+        self.lay.addWidget(self.prog_panel)
+        self.run_timer = QTimer(self)
+        self.run_timer.timeout.connect(self._run_tick)
+
+        # ---------- Vorhandene Backups ----------
+        ex = Panel("Vorhandene Backups & Wiederherstellen")
+        er = QHBoxLayout()
+        er.setSpacing(8)
+        self.ex_target = QComboBox()
+        self.ex_target.setMinimumHeight(38)
+        self.ex_target.setMinimumWidth(320)
+        self.ex_target.currentIndexChanged.connect(lambda _=0: self.refresh_existing())
+        er.addWidget(self.ex_target, 1)
+        er.addWidget(Button("↻", "icon", self.refresh_existing, "Neu einlesen"))
+        ex.body.addLayout(er)
+        self.ex_table = QTableWidget(0, 4)
+        self.ex_table.setHorizontalHeaderLabels(["DATUM", "ART", "GRÖSSE", "DETAILS"])
+        self.ex_table.verticalHeader().setVisible(False)
+        self.ex_table.setShowGrid(False)
+        self.ex_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ex_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.ex_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ex_table.horizontalHeader().setStretchLastSection(True)
+        self.ex_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for i, w in enumerate((170, 110, 110)):
+            self.ex_table.setColumnWidth(i, w)
+        self.ex_table.setMinimumHeight(170)
+        ex.body.addWidget(self.ex_table)
+        xb = QHBoxLayout()
+        xb.setSpacing(8)
+        xb.addWidget(Button("Öffnen", "ghost", self.open_backup, "Im Dateimanager zeigen"))
+        xb.addWidget(Button("In Ordner wiederherstellen …", "primary", lambda: self.restore(False)))
+        xb.addWidget(Button("An Originalort zurückspielen …", "ghost", lambda: self.restore(True)))
+        xb.addStretch(1)
+        xb.addWidget(Button("Löschen", "danger", self.delete_backup))
+        ex.body.addLayout(xb)
+        self.lay.addWidget(ex)
+
+        # ---------- Zeitplan ----------
+        sc = Panel("Automatisch sichern")
+        sr = QHBoxLayout()
+        sr.setSpacing(8)
+        self.cb_sched = QComboBox()
+        self.cb_sched.setMinimumHeight(38)
+        for k, t in (("off", "Aus"), ("daily", "Täglich"), ("weekly", "Wöchentlich")):
+            self.cb_sched.addItem(t, k)
+        sr.addWidget(self.cb_sched)
+        sr.addWidget(Button("Übernehmen", "ghost", self.apply_schedule))
+        self.sched_lbl = Label("", "Muted", wrap=True)
+        sr.addWidget(self.sched_lbl, 1)
+        sc.body.addLayout(sr)
+        sc.body.addWidget(Label("Läuft im Hintergrund mit den Einstellungen oben – auch wenn Tuxdex geschlossen ist. "
+                                "Nicht angeschlossene Ziele werden übersprungen, verpasste Termine nachgeholt. "
+                                "Ohne root-Rechte und ohne Passwort-Verschlüsselung.", "Hint", wrap=True))
+        self.lay.addWidget(sc)
+
+        out = Panel("Ausgabe")
+        self.log = LogView(140)
+        out.body.addWidget(self.log)
+        self.lay.addWidget(out)
+
+        self._load_cfg()
+        self.refresh_targets()
+        self._refresh_badge()
+        self._refresh_schedule()
+
+    # ======================================================================
+    # Einstellungen
+    # ======================================================================
+
+    def _load_cfg(self):
+        c = self.cfg
+        self.src_list.clear()
+        for s in c["sources"]:
+            self.src_list.addItem(short_path(_expand(s)))
+        self.excl.setPlainText("\n".join(c["excludes"]))
+        idx = next((i for i, m in enumerate(self.MODES) if m[0] == c["mode"]), 0)
+        self.seg.set(idx)
+        for cb, val in ((self.cb_comp, c["compression"]), (self.cb_level, c["level"]), (self.cb_keep, c["keep"]),
+                        (self.cb_sched, c.get("schedule", "off"))):
+            i = cb.findData(val)
+            if i >= 0:
+                cb.setCurrentIndex(i)
+        self.o_verify.setChecked(c.get("verify", True))
+        self.o_delete.setChecked(c.get("delete", True))
+        self.o_root.setChecked(c.get("root", False))
+        self.o_enc.setChecked(c.get("encrypt", False) and which("gpg"))
+        self.pw1.setVisible(self.o_enc.isChecked())
+        self.pw2.setVisible(self.o_enc.isChecked())
+        self._mode_changed(idx, save=False)
+
+    def _collect(self):
+        c = self.cfg
+        home = os.path.expanduser("~")
+        c["sources"] = [self.src_list.item(i).text().replace("~", home, 1) if self.src_list.item(i).text()
+                        .startswith("~") else self.src_list.item(i).text() for i in range(self.src_list.count())]
+        c["excludes"] = [l.strip() for l in self.excl.toPlainText().splitlines() if l.strip()]
+        c["mode"] = self.mode
+        c["compression"] = self.cb_comp.currentData()
+        c["level"] = self.cb_level.currentData()
+        c["keep"] = self.cb_keep.currentData()
+        c["verify"] = self.o_verify.isChecked()
+        c["delete"] = self.o_delete.isChecked()
+        c["root"] = self.o_root.isChecked()
+        c["encrypt"] = self.o_enc.isChecked()
+        c["disabled"] = [t for t, r in self.rows.items() if not r["cb"].isChecked()]
+        return c
+
+    def _save(self):
+        cfg = self._collect()
+        cfg["history"] = backup_load().get("history", [])
+        backup_save(cfg)
+
+    def _mode_changed(self, idx, save=True):
+        self.mode = self.MODES[idx][0]
+        self.mode_hint.setText(self.MODE_HINT[self.mode])
+        arch = self.mode == "archive"
+        self.f_comp.setVisible(arch)
+        self.f_level.setVisible(arch)
+        self.enc_row.setVisible(arch)
+        self.o_verify.setVisible(arch)
+        self.f_keep.setVisible(self.mode != "mirror")
+        self.o_delete.setVisible(self.mode == "mirror")
+        self._update_target_notes()
+
+    def _add_source(self, p):
+        p = short_path(_expand(p))
+        if not any(self.src_list.item(i).text() == p for i in range(self.src_list.count())):
+            self.src_list.addItem(p)
+            if p == "/etc":
+                self.o_root.setChecked(True)
+        self._save()
+
+    def _pick_source(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Ordner sichern", os.path.expanduser("~"))
+        if d:
+            self._add_source(d)
+
+    def _del_source(self):
+        for it in self.src_list.selectedItems():
+            self.src_list.takeItem(self.src_list.row(it))
+        self._save()
+
+    def _estimate(self):
+        c = self._collect()
+        use_sudo = c["root"] and self.app.priv.is_authenticated_nonblocking()
+        self.size_lbl.setText("Berechne …")
+        srcs = [_expand(s) for s in c["sources"] if os.path.exists(_expand(s))]
+        exc = [_expand(e) for e in c["excludes"]]
+
+        def worker():
+            n = estimate_size(srcs, exc, use_sudo) if srcs else 0
+            ui(lambda: self.size_lbl.setText(f"Umfang: {fmt_bytes(n)}"
+                                             + ("" if use_sudo or not c["root"] else " (ohne root – evtl. zu wenig)")))
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ======================================================================
+    # Ziele
+    # ======================================================================
+
+    def refresh_targets(self):
+        # Laufwerke zur Auswahl: alle eingehängten echten Datenträger außer Systempartitionen
+        self.drive_cb.clear()
+        try:
+            out = subprocess.run(["df", "-B1", "--output=source,fstype,avail,target", "-x", "tmpfs", "-x",
+                                  "devtmpfs", "-x", "squashfs", "-x", "overlay", "-x", "efivarfs"],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            out = ""
+        seen = set()
+        for line in out.splitlines()[1:]:
+            p = line.split(None, 3)
+            if len(p) < 4 or not p[0].startswith("/dev/") or p[0] in seen:
+                continue
+            seen.add(p[0])
+            tgt = p[3]
+            if tgt in SYSTEM_MOUNTS or tgt.startswith(("/boot", "/efi")):
+                continue
+            self.drive_cb.addItem(f"{short_path(tgt)}  ·  {p[1]}  ·  {fmt_bytes(int(p[2]))} frei", tgt)
+        if not self.drive_cb.count():
+            self.drive_cb.addItem("Kein externes Laufwerk eingehängt – Stick einstecken oder Ordner wählen", None)
+        self._build_target_rows()
+
+    def _build_target_rows(self):
+        while self.tg_box.count():
+            it = self.tg_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.rows = {}
+        if not self.cfg["targets"]:
+            self.tg_box.addWidget(Label("Noch kein Ziel – unten ein Laufwerk oder einen Ordner hinzufügen.", "Muted"))
+        for t in self.cfg["targets"]:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            cb = QCheckBox(short_path(t))
+            cb.setChecked(t not in self.cfg.get("disabled", []))
+            cb.toggled.connect(lambda _=False: self._save())
+            h.addWidget(cb)
+            info = Label("", "Hint", wrap=True)
+            h.addWidget(info, 1)
+            h.addWidget(Button("Entfernen", "ghost", lambda _=False, t=t: self._del_target(t)))
+            self.tg_box.addWidget(w)
+            self.rows[t] = {"cb": cb, "info": info}
+        self._update_target_notes()
+        prev = self.ex_target.currentData()
+        self.ex_target.blockSignals(True)
+        self.ex_target.clear()
+        for t in self.cfg["targets"]:
+            self.ex_target.addItem(short_path(t), t)
+        i = self.ex_target.findData(prev)
+        self.ex_target.setCurrentIndex(max(0, i))
+        self.ex_target.blockSignals(False)
+        self.refresh_existing()
+
+    def _update_target_notes(self):
+        for t, r in self.rows.items():
+            fstype, free, mnt = fs_info(t)
+            if fstype is None:
+                r["info"].setText("nicht angeschlossen – wird übersprungen")
+                r["cb"].setEnabled(False)
+                continue
+            r["cb"].setEnabled(True)
+            note = f"{fstype} · {fmt_bytes(free)} frei"
+            if self.mode == "snapshot" and fstype not in LINUX_FS:
+                note += " · ⚠ keine Snapshots auf diesem Dateisystem – „Archiv“ wählen"
+            elif self.mode == "archive" and fstype in FAT_FS:
+                note += " · FAT32: Archiv wird in 4-GB-Teile geteilt"
+            elif self.mode != "archive" and fstype not in LINUX_FS:
+                note += " · ohne Linux-Rechte (Besitzer/Rechte gehen verloren)"
+            r["info"].setText(note)
+
+    def _add_target(self, path):
+        if not path:
+            return
+        path = os.path.normpath(path)
+        srcs = [_expand(s) for s in self._collect()["sources"]]
+        if any(path == s for s in srcs):
+            show_warning(self, "Ungültiges Ziel", "Das Ziel darf nicht gleich einer Quelle sein.")
+            return
+        if path not in self.cfg["targets"]:
+            self.cfg["targets"].append(path)
+            self._save()
+            self._build_target_rows()
+
+    def _add_drive(self):
+        self._add_target(self.drive_cb.currentData())
+
+    def _pick_target(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Backup-Ziel wählen", "/run/media")
+        if d:
+            self._add_target(d)
+
+    def _del_target(self, t):
+        if t in self.cfg["targets"]:
+            self.cfg["targets"].remove(t)
+            self._save()
+            self._build_target_rows()
+
+    # ======================================================================
+    # Backup ausführen
+    # ======================================================================
+
+    def start(self):
+        if self.job:
+            return
+        cfg = self._collect()
+        targets = [t for t, r in self.rows.items() if r["cb"].isChecked() and r["cb"].isEnabled()]
+        if not cfg["sources"]:
+            show_info(self, "Nichts ausgewählt", "Bitte mindestens einen Ordner zum Sichern hinzufügen.")
+            return
+        if not targets:
+            show_info(self, "Kein Ziel", "Bitte mindestens ein angeschlossenes Ziel anhaken.")
+            return
+        if cfg["mode"] == "snapshot":
+            bad = [t for t in targets if fs_info(t)[0] not in LINUX_FS]
+            if bad:
+                show_warning(self, "Snapshots nicht möglich",
+                             "Diese Ziele haben kein Linux-Dateisystem:\n" + "\n".join(short_path(b) for b in bad)
+                             + "\n\nFür sie „Archiv“ oder „Spiegel“ verwenden – oder abhaken.")
+                return
+        pw = None
+        if cfg["mode"] == "archive" and cfg["encrypt"]:
+            pw = self.pw1.text()
+            if len(pw) < 8:
+                show_warning(self, "Passwort", "Das Passwort muss mindestens 8 Zeichen haben.")
+                return
+            if pw != self.pw2.text():
+                show_warning(self, "Passwort", "Die Passwörter stimmen nicht überein.")
+                return
+        use_sudo = cfg["root"]
+        if use_sudo and not self.app.priv.ensure(self):
+            return
+        self._save()
+        self.log.set_text("")
+        # Fortschritts-Zeilen je Ziel
+        while self.prog_box.count():
+            it = self.prog_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.prog = {}
+        for t in targets:
+            w = QWidget()
+            v = QVBoxLayout(w)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(4)
+            hd = QHBoxLayout()
+            hd.setSpacing(10)
+            badge = StatusBadge("info", "Wartet")
+            badge.setFixedWidth(120)
+            hd.addWidget(badge)
+            hd.addWidget(Label(short_path(t), "PanelTitle"))
+            hd.addStretch(1)
+            eta = Label("", "Muted")
+            hd.addWidget(eta)
+            v.addLayout(hd)
+            bar = ProgressBar()
+            v.addWidget(bar)
+            det = Label("", "Hint", wrap=True)
+            v.addWidget(det)
+            self.prog_box.addWidget(w)
+            self.prog[t] = {"badge": badge, "bar": bar, "det": det, "eta": eta}
+        self.prog_panel.show()
+        self.run_badge.set("ok", "Läuft")
+        self.run_started = time.time()
+        self.run_timer.start(1000)
+        self._run_tick()
+        self.b_start.hide()
+        self.b_cancel.show()
+        self.job = BackupJob(dict(cfg), targets,
+                             lambda t, d: ui(lambda: self._on_progress(t, d)),
+                             lambda s: ui(lambda: self.log.append_text(s)),
+                             lambda ok, s: ui(lambda: self._on_done(ok, s)),
+                             passphrase=pw, use_sudo=use_sudo)
+        self.job.start()
+        QTimer.singleShot(0, lambda: self.ensureWidgetVisible(self.prog_panel, 0, 40))
+
+    def cancel(self):
+        if self.job and ask_confirm(self, "Backup abbrechen", "Laufendes Backup abbrechen? Unfertige Dateien "
+                                    "werden entfernt, vorhandene Backups bleiben erhalten.", "Abbrechen",
+                                    danger=True):
+            self.job.cancel()
+
+    def _run_tick(self):
+        el = int(time.time() - self.run_started)
+        self.run_time.setText(f"{el // 3600:d}:{el // 60 % 60:02d}:{el % 60:02d}")
+
+    def _on_progress(self, t, d):
+        p = self.prog.get(t)
+        if not p:
+            return
+        st = d.get("state")
+        if st == "ok":
+            p["badge"].set("ok", "Fertig")
+            p["bar"].set(100, "100 %")
+            p["eta"].setText("")
+        elif st == "error":
+            p["badge"].set("danger", "Fehler")
+            p["eta"].setText("")
+        elif st == "wait":
+            p["badge"].set("info", "Vorbereiten")
+            p["bar"].set(None, "…")
+        elif st == "run":
+            p["badge"].set("ok", "Läuft")
+            if "pct" in d:
+                p["bar"].set(d["pct"], f"{d['pct']} %")
+            if d.get("eta") and d.get("pct", 0) < 100:
+                p["eta"].setText(f"Restzeit ca. {d['eta']}")
+        if "msg" in d:
+            p["det"].setText(d["msg"])
+        elif "done" in d:
+            txt = f"{fmt_bytes(d['done'])} / {fmt_bytes(self.job.total if self.job else 0)} · {d.get('speed', '')}"
+            if d.get("written") is not None:
+                txt += f" · geschrieben (komprimiert): {fmt_bytes(d['written'])}"
+            p["det"].setText(txt)
+
+    def _on_done(self, ok, summary):
+        self.run_timer.stop()
+        self._run_tick()
+        self.job = None
+        self.b_cancel.hide()
+        self.b_start.show()
+        self.run_badge.set("ok" if ok else "warn", "Fertig" if ok else summary.split(" ·")[0])
+        self.log.append_text(f"\n{summary}\n")
+        self.pw1.clear()
+        self.pw2.clear()
+        self._refresh_badge()
+        self._update_target_notes()
+        self.refresh_existing()
+
+    def _refresh_badge(self):
+        h = backup_load().get("history", [])
+        if not h:
+            self.badge.set("warn", "Noch kein Backup")
+            return
+        last = h[0]
+        days = (time.time() - last["at"]) / 86400
+        txt = f"Letztes Backup {fmt_ago(last['at'])}"
+        self.badge.set("ok" if days < 8 and last.get("ok") else "warn", txt)
+
+    # ======================================================================
+    # Vorhandene Backups
+    # ======================================================================
+
+    def refresh_existing(self):
+        t = self.ex_target.currentData()
+        self.ex_table.setRowCount(0)
+        self.existing = []
+        if not t or not os.path.isdir(t):
+            return
+        self.existing = list_backups(t)
+        kinds = {"snapshot": "Snapshot", "mirror": "Spiegel", "archive": "Archiv"}
+        self.ex_table.setRowCount(len(self.existing))
+        for i, b in enumerate(self.existing):
+            det = os.path.basename(b["name"]) if b["kind"] == "archive" else short_path(b["path"])
+            if b["encrypted"]:
+                det += " · 🔒 verschlüsselt"
+            if len(b["parts"]) > 1:
+                det += f" · {len(b['parts'])} Teile"
+            for j, v in enumerate((b["when"].strftime("%d.%m.%Y %H:%M"), kinds[b["kind"]],
+                                   fmt_bytes(b["size"]) if b["size"] is not None else "—", det)):
+                self.ex_table.setItem(i, j, QTableWidgetItem(v))
+
+    def _selected(self):
+        r = self.ex_table.currentRow()
+        if r < 0 or r >= len(getattr(self, "existing", [])):
+            show_info(self, "Nichts ausgewählt", "Bitte zuerst ein Backup in der Liste auswählen.")
+            return None
+        return self.existing[r]
+
+    def open_backup(self):
+        b = self._selected()
+        if b and which("xdg-open"):
+            p = b["path"] if b["kind"] != "archive" else os.path.dirname(b["path"])
+            subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def restore(self, original):
+        b = self._selected()
+        if not b or self.job:
+            return
+        if original:
+            dest = "/"
+            if not ask_confirm(self, "An Originalort zurückspielen",
+                               f"Backup vom {b['when']:%d.%m.%Y %H:%M} an den ursprünglichen Ort zurückschreiben?\n\n"
+                               "Gleichnamige Dateien werden durch den Stand aus dem Backup ersetzt. "
+                               "Dateien, die es im Backup nicht gibt, bleiben erhalten.", "Zurückspielen",
+                               danger=True):
+                return
+        else:
+            from PySide6.QtWidgets import QFileDialog
+            dest = QFileDialog.getExistingDirectory(self, "Wiederherstellen nach …", os.path.expanduser("~"))
+            if not dest:
+                return
+            dest = os.path.join(dest, f"Wiederhergestellt_{b['when']:%Y-%m-%d_%H%M}")
+            os.makedirs(dest, exist_ok=True)
+        passfile = None
+        if b["encrypted"]:
+            from PySide6.QtWidgets import QInputDialog
+            pw, ok = QInputDialog.getText(self, "Passwort", "Passwort des Archivs:", QLineEdit.Password)
+            if not ok or not pw:
+                return
+            fd, passfile = tempfile.mkstemp(prefix="tuxdex-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+            os.write(fd, pw.encode())
+            os.close(fd)
+        use_sudo = original or self.o_root.isChecked()
+        if use_sudo and not self.app.priv.ensure(self):
+            if passfile:
+                os.remove(passfile)
+            return
+        script = "set -o pipefail; " + restore_command(b, dest, use_sudo, passfile)
+        self.log.set_text(f"$ {script.replace(passfile or '§', '<passwort>')}\n")
+
+        def done(rc):
+            if passfile:
+                try:
+                    os.remove(passfile)
+                except OSError:
+                    pass
+            self.log.append_text(f"\n[Exit-Code {rc}]\n")
+            if rc == 0:
+                self.log.append_text(f"Wiederhergestellt nach {short_path(dest)}\n")
+        run_streaming(["bash", "-c", script], self.log, clear_first=False, on_done=done)
+
+    def delete_backup(self):
+        b = self._selected()
+        if not b:
+            return
+        if not ask_confirm(self, "Backup löschen", f"Backup vom {b['when']:%d.%m.%Y %H:%M} endgültig löschen?",
+                           "Löschen", danger=True):
+            return
+        if b["kind"] == "archive":
+            for p in b["parts"] + [b["parts"][0].split(".part")[0] + ".sha256"]:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            self.refresh_existing()
+            return
+        # Snapshots enthalten ggf. root-Dateien → mit sudo, falls angemeldet
+        use_sudo = self.app.priv.is_authenticated_nonblocking()
+        self.log.set_text(f"$ rm -rf {short_path(b['path'])}\n")
+        run_streaming(["rm", "-rf", "--", b["path"]], self.log, needs_sudo=use_sudo, clear_first=False,
+                      on_done=lambda rc: (self.log.append_text(f"[Exit-Code {rc}]\n"), self.refresh_existing()))
+
+    # ======================================================================
+    # Zeitplan
+    # ======================================================================
+
+    def _refresh_schedule(self):
+        on, nxt = backup_schedule_state()
+        self.sched_lbl.setText(f"Aktiv · nächster Lauf: {nxt}" if on else "Kein Zeitplan aktiv")
+
+    def apply_schedule(self):
+        when = self.cb_sched.currentData()
+        cfg = self._collect()
+        if when != "off":
+            if cfg["mode"] == "archive" and cfg["encrypt"]:
+                show_warning(self, "Zeitplan", "Verschlüsselte Archive brauchen das Passwort – das wird nicht "
+                                               "gespeichert. Für den Zeitplan Snapshots oder unverschlüsselte "
+                                               "Archive verwenden.")
+                return
+            if not cfg["targets"]:
+                show_info(self, "Zeitplan", "Bitte zuerst ein Ziel hinzufügen.")
+                return
+        cfg["schedule"] = when
+        self._save()
+        ok, txt = backup_schedule_set(when)
+        if not ok:
+            show_warning(self, "Zeitplan", txt)
+        self._refresh_schedule()
+
+
 SETTINGS_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json")
 BUILD_DIR = os.path.join(os.path.expanduser("~/.cache"), "tuxdex", "build")
 
@@ -8070,6 +9386,7 @@ class SettingsPage(Page):
             "flatpak": "Flatpak-Apps und ihre Rechte (Dateien, Geräte, Netzwerk …) wie mit Flatseal",
             "disks": "Laufwerke einhängen, umbenennen, prüfen, formatieren, sicher entfernen",
             "storage": "Belegung je Festplatte, größte Ordner, Aufräumen",
+            "backup": "Snapshots, Spiegel und komprimierte Archive – auf mehrere Ziele gleichzeitig",
             "swap": "Fallback-Speicher (Swapfile) und Swappiness",
             "tasks": "Prozesse, Leistung, Hardware- und Netzwerkinfos",
             "antivirus": "ClamAV: Signaturen, Scans, Quarantäne",
@@ -8266,7 +9583,7 @@ class MainWindow(QWidget):
 
         pages = {
             "update": UpdaterTab, "software": SoftwareTab, "flatpak": FlatpakTab, "swap": SwapTab,
-            "disks": DisksTab, "storage": StorageTab, "tasks": TaskTab, "antivirus": AntivirusTab,
+            "disks": DisksTab, "storage": StorageTab, "backup": BackupTab, "tasks": TaskTab, "antivirus": AntivirusTab,
             "security": SecurityTab, "users": UsersTab,
         }
         self.tabs = []
@@ -8423,6 +9740,8 @@ class MainWindow(QWidget):
 
 def main():
     global _INVOKER
+    if "--backup" in sys.argv:
+        return run_backup_cli()
     app = QApplication(sys.argv)
     app.setApplicationName("Tuxdex")
     app.setApplicationDisplayName("Tuxdex")

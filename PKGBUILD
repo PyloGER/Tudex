@@ -6,7 +6,7 @@ pkgdesc="Grafische Systemverwaltung für Arch Linux: Updates, Software, Flatpak-
 arch=('any')
 url="https://github.com/PyloGER/Tuxdex"
 license=('MIT')
-depends=('python' 'pyside6' 'sudo' 'util-linux' 'iproute2' 'pciutils' 'hwdata' 'pacman-contrib' 'ttf-ibm-plex')
+depends=('python' 'pyside6' 'sudo' 'util-linux' 'iproute2' 'pciutils' 'hwdata' 'pacman-contrib' 'ttf-ibm-plex' 'rsync')
 optdepends=(
     'paru: AUR-Pakete aktualisieren und installieren'
     'flatpak: Flatpak-Apps verwalten'
@@ -21,6 +21,9 @@ optdepends=(
     'mullvad-vpn-daemon: Mullvad VPN'
     'sbctl: Secure Boot einrichten'
     'arch-audit: Pakete auf bekannte Sicherheitslücken prüfen'
+    'zstd: Backup-Archive mit zstd komprimieren'
+    'gnupg: Backup-Archive mit Passwort verschlüsseln'
+    'pigz: schnellere gzip-Backups'
 )
 # früherer Projektname – wird beim Installieren automatisch ersetzt
 conflicts=('arch-manager')
