@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.6.0--beta.8-e9c46a">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.6.0--beta.9-e9c46a">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -40,7 +40,7 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 | **Flatpak** | Rechte jeder Flatpak-App per Schalter – Netzwerk, Dateien & Ordner, Geräte, Ton, Bildschirm, Umgebungsvariablen, Portal-Freigaben · Regeln für alle Apps · riskante Rechte sind markiert, Änderungen hervorgehoben · Flathub einrichten, Apps starten, aktualisieren, deinstallieren |
 | **Datenträger** | Laufwerke und Partitionen als Baum · Einhängen, Aushängen, Umbenennen, Prüfen, **Formatieren** (ext4, btrfs, xfs, exFAT, FAT32, NTFS), sicher entfernen · erkennt neue USB-Sticks automatisch · System-Partitionen sind geschützt |
 | **Speicher** | Belegung je Festplatte · „Was belegt den Platz?“ mit Drill-down in Ordner · Aufräumen: Paket-Cache, verwaiste Pakete, Journal, Papierkorb, Flatpak |
-| **Backup** | Snapshots (versioniert, platzsparend), Spiegel oder komprimierte Archive (zstd/xz/gzip, optional mit Passwort) · **mehrere Ziele gleichzeitig** · Prüfung nach dem Schreiben · alte Versionen automatisch aufräumen · wiederherstellen · Zeitplan täglich/wöchentlich |
+| **Backup** | Snapshots (versioniert, platzsparend), Spiegel oder komprimierte Archive (zstd/xz/gzip, optional mit Passwort) · **mehrere Ziele gleichzeitig** · Prüfung nach dem Schreiben · eigene Namen mit Datum ([so geht’s](#backups-benennen)) · alte Versionen automatisch aufräumen · wiederherstellen · Zeitplan täglich/wöchentlich |
 | **Swap** | Swapfile anlegen und entfernen, Swappiness einstellen |
 | **Taskmanager** | Prozesse mit Programm-Icons, CPU, RAM, Datenträger-I/O, Energie-Schätzung · Leistung: CPU (Takt, Temperatur), RAM, GPU, Netzwerk, Datenträger, Akku · System: CPU-/GPU-Name, Mainboard, IP-Adressen, DNS · **Autostart & Bootzeit** · **Versionsstand** von Grafiktreiber, Microcode, BIOS, Kernel, Firmware |
 | **Antivirus** | Bedienung für ein bereits installiertes ClamAV (optional): Signaturen aktualisieren, Ordner oder ganzes System scannen – mit **Live-Fortschritt** (Dateien, Datenmenge, Tempo, Restzeit) und Status, ob der Scan läuft oder hängt · Quarantäne mit Wiederherstellen |
@@ -103,6 +103,39 @@ Gespeicherte Update-Prüfung und Quarantäne liegen in `~/.cache/tuxdex` und `~/
 sudo pacman -S --needed python pyside6
 python3 tuxdex.py
 ```
+
+## Backups benennen
+
+Unter **Backup → Name der Sicherung** legst du fest, wie Snapshot-Ordner und Archiv-Dateien heißen. So siehst du schon am Namen, von wann eine Sicherung ist.
+
+Du schreibst beliebigen Text und setzt das Datum mit Platzhaltern ein:
+
+| Platzhalter | wird zu | Beispiel |
+|---|---|---|
+| `yyyy` | Jahr | 2026 |
+| `mm` | Monat | 09 |
+| `dd` | Tag | 27 |
+| `HH` | Stunde | 10 |
+| `MM` | Minute | 15 |
+| `SS` | Sekunde | 00 |
+
+Beispiele (Sicherung am 27.09.2026 um 10:15 Uhr):
+
+| Eingabe | Name der Sicherung |
+|---|---|
+| *(leer)* | `2026-09-27_101500` (Standard) |
+| `yyyy-mm-dd` | `2026-09-27` |
+| `Laptop_yyyy-mm-dd` | `Laptop_2026-09-27` |
+| `yyyy-mm-dd vor Update` | `2026-09-27 vor Update` |
+| `Fotos yyyymmdd_HHMM` | `Fotos 20260927_1015` |
+
+- Ein Platzhalter wird nur ersetzt, wenn er nicht direkt an Buchstaben grenzt. `Sommer` bleibt also `Sommer`. Trenne Text und Platzhalter mit `_`, `-`, Punkt oder Leerzeichen.
+- Kleines `mm` ist der Monat, großes `MM` die Minute.
+- Gibt es den Namen auf einem Ziel schon (z. B. zwei Sicherungen am selben Tag mit `yyyy-mm-dd`), hängt Tuxdex `_2`, `_3` … an. Nimm `HH` und `MM` dazu, wenn du öfter am Tag sicherst.
+- Archive bekommen die Endung automatisch dazu (`.tar.zst`, `.tar.xz` …, verschlüsselt zusätzlich `.gpg`).
+- Unter dem Eingabefeld zeigt Tuxdex, wie die Sicherung heute heißen würde.
+- Beim Spiegel gibt es keinen Namen, er ist immer nur eine Kopie.
+- Sortieren und Aufräumen alter Versionen richten sich nach dem echten Sicherungszeitpunkt, nicht nach dem Namen. Tuxdex merkt ihn sich in `Tuxdex-Backup/<Rechnername>/.tuxdex-names.json` auf dem Ziel. Ältere Sicherungen mit dem Standardnamen bleiben unverändert.
 
 ## Abhängigkeiten
 

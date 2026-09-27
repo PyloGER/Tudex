@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.8"
+APP_VERSION = "1.6.0-beta.9"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -9342,8 +9342,46 @@ BACKUP_DEFAULTS = {
     "excludes": ["~/.cache", "~/.local/share/Trash", "~/.local/share/Steam/steamapps"],
     "targets": [], "disabled": [], "mode": "snapshot", "compression": "zstd", "level": "standard",
     "keep": 10, "verify": True, "delete": True, "root": False, "encrypt": False, "schedule": "off",
-    "history": [],
+    "history": [], "name_pattern": "",
 }
+BACKUP_INDEX = ".tuxdex-names.json"   # Name → Zeitpunkt, damit frei benannte Backups richtig sortiert werden
+# Platzhalter im Namensmuster: yyyy mm dd (Datum), HH MM SS (Uhrzeit). Nur, wenn sie nicht an Buchstaben
+# grenzen – „Sommer“ bleibt „Sommer“, „yyyymmdd“ wird trotzdem ersetzt.
+_NAME_TOKENS = {"yyyy": "%Y", "mm": "%m", "dd": "%d", "HH": "%H", "MM": "%M", "SS": "%S"}
+_NAME_RUN = re.compile(r"(?<![A-Za-zÄÖÜäöüß])((?:yyyy|mm|dd|HH|MM|SS)+)(?![A-Za-zÄÖÜäöüß])")
+
+
+def backup_label(pattern, when):
+    """Ordner-/Dateiname eines Backups aus dem Namensmuster, z. B. „Laptop_yyyy-mm-dd“ → „Laptop_2026-09-27“."""
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return when.strftime(BACKUP_TS)
+    s = _NAME_RUN.sub(lambda m: re.sub(r"yyyy|mm|dd|HH|MM|SS", lambda t: when.strftime(_NAME_TOKENS[t.group(0)]),
+                                       m.group(1)), pattern)
+    s = re.sub(r"[/\\\x00-\x1f]", "-", s).strip().lstrip(".")
+    return s[:120] or when.strftime(BACKUP_TS)
+
+
+def _backup_when(name, path, index):
+    """Zeitpunkt eines Backups: aus der Namensliste, dem Standardnamen, einem Datum im Namen oder der Datei."""
+    if name in index:
+        try:
+            return datetime.fromisoformat(index[name])
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", name)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), BACKUP_TS)
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})", name)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(os.path.getmtime(path))
 # Dateisysteme mit Linux-Rechten und Hardlinks (Snapshots möglich)
 LINUX_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "jfs", "reiserfs", "zfs", "bcachefs", "nilfs2"}
 FAT_FS = {"vfat", "msdos", "fat"}                  # 4-GB-Grenze je Datei → Archive werden geteilt
@@ -9405,13 +9443,14 @@ def list_backups(target):
     """Alle Backups auf einem Ziel, neueste zuerst: dict(kind, name, path, when, size, parts, encrypted)."""
     base = backup_dir(target)
     res = []
+    index = _load_json(os.path.join(base, BACKUP_INDEX), {})
     snaps = os.path.join(base, "snapshots")
     if os.path.isdir(snaps):
         for n in os.listdir(snaps):
-            try:
-                when = datetime.strptime(n, BACKUP_TS)
-            except ValueError:
+            path = os.path.join(snaps, n)
+            if n.startswith(".") or n.endswith(".partial") or os.path.islink(path) or not os.path.isdir(path):
                 continue
+            when = _backup_when(n, path, index)
             res.append({"kind": "snapshot", "name": n, "path": os.path.join(snaps, n), "when": when,
                         "size": None, "parts": [], "encrypted": False})
     mirror = os.path.join(base, "mirror")
@@ -9429,12 +9468,7 @@ def list_backups(target):
                 continue
             groups.setdefault(m.group("base"), []).append(os.path.join(arch, n))
         for b, parts in groups.items():
-            m = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{6})\.tar", b)
-            try:
-                when = datetime.strptime(m.group(1), BACKUP_TS) if m else datetime.fromtimestamp(
-                    os.path.getmtime(parts[0]))
-            except ValueError:
-                when = datetime.fromtimestamp(os.path.getmtime(parts[0]))
+            when = _backup_when(b, parts[0], index)
             res.append({"kind": "archive", "name": b, "path": parts[0], "when": when,
                         "size": sum(os.path.getsize(p) for p in parts), "parts": parts,
                         "encrypted": b.endswith(".gpg")})
@@ -9514,7 +9548,9 @@ class BackupJob:
         self.on_progress, self.on_log, self.on_done = on_progress, on_log, on_done
         self.passphrase, self.use_sudo = passphrase, use_sudo
         self.procs, self.cancelled = [], False
-        self.ts = datetime.now().strftime(BACKUP_TS)
+        self.now = datetime.now()
+        self.ts = self.now.strftime(BACKUP_TS)
+        self.label = backup_label(cfg.get("name_pattern"), self.now)
         self.results = {}
 
     def start(self):
@@ -9610,7 +9646,10 @@ class BackupJob:
             prev = [b for b in list_backups(target) if b["kind"] == "snapshot"]
             if prev:
                 cmd.append(f"--link-dest={prev[0]['path']}")
-            dest = os.path.join(snaps, self.ts + ".partial")
+            if not getattr(self, "snap_name", None):
+                self.snap_name = self._unique(self.label, lambda b, n: os.path.exists(
+                    os.path.join(b, "snapshots", n)) or os.path.exists(os.path.join(b, "snapshots", n + ".partial")))
+            dest = os.path.join(snaps, self.snap_name + ".partial")
         else:
             dest = os.path.join(base, "mirror")
             if self.cfg.get("delete", True):
@@ -9667,9 +9706,10 @@ class BackupJob:
             try:
                 if os.path.islink(link):
                     os.remove(link)
-                os.symlink(os.path.join("snapshots", self.ts), link)
+                os.symlink(os.path.join("snapshots", self.snap_name), link)
             except OSError:
                 pass
+            self._remember(target, self.snap_name)
             self._retention(target)
         else:
             try:
@@ -9685,6 +9725,24 @@ class BackupJob:
             return subprocess.run(cmd, capture_output=True, timeout=3600).returncode
         except Exception:
             return 1
+
+    def _unique(self, name, exists):
+        """Hängt _2, _3 … an, falls es den Namen auf einem Ziel schon gibt (z. B. zwei Backups am selben Tag)."""
+        cand, i = name, 1
+        while any(exists(backup_dir(t), cand) for t in self.targets):
+            i += 1
+            cand = f"{name}_{i}"
+        return cand
+
+    def _remember(self, target, name):
+        """Zeitpunkt zum Namen merken – frei benannte Backups werden so richtig sortiert und ausgedünnt."""
+        path = os.path.join(backup_dir(target), BACKUP_INDEX)
+        index = _load_json(path, {})
+        index[name] = self.now.isoformat(timespec="seconds")
+        try:
+            _save_json(path, index)
+        except Exception:
+            pass
 
     def _retention(self, target):
         keep = int(self.cfg.get("keep", 10) or 0)
@@ -9708,7 +9766,12 @@ class BackupJob:
         import hashlib
         prog, ext, levels, popts, _ = COMPRESSORS.get(self.cfg.get("compression"), COMPRESSORS["zstd"])
         enc = bool(self.passphrase)
-        name = f"{backup_host()}_{self.ts}{ext}" + (".gpg" if enc else "")
+        label = self.label if (self.cfg.get("name_pattern") or "").strip() else f"{backup_host()}_{self.ts}"
+        suffix = ext + (".gpg" if enc else "")
+        label = self._unique(label, lambda b, n: any(
+            f.startswith(n + suffix) for f in (os.listdir(os.path.join(b, "archives"))
+                                               if os.path.isdir(os.path.join(b, "archives")) else [])))
+        name = label + suffix
         writers = {}
         for t in self.targets:
             fstype, free, _ = fs_info(t)
@@ -9860,6 +9923,7 @@ class BackupJob:
                     self.results[t] = "error"
                     self._prog(t, state="error", msg="Prüfsumme stimmt nicht – Datenträger defekt?")
                     return
+            self._remember(t, name)
             self._retention(t)
             self.results[t] = "ok"
             note = f" · {len(files)} Teile" if len(files) > 1 else ""
@@ -10061,6 +10125,20 @@ class BackupTab(Page):
         opts.addWidget(self.f_keep, 0, 2)
         opts.setColumnStretch(3, 1)
         how.body.addLayout(opts)
+        self.name_edit = LineEdit(placeholder="leer = Standard, z. B. 2026-09-27_101500", mono=True)
+        self.name_edit.setMaximumWidth(420)
+        self.name_edit.textChanged.connect(self._name_preview)
+        self.name_edit.editingFinished.connect(self._save)
+        self.name_hint = Label("", "Hint", wrap=True)
+        self.name_hint.setTextFormat(Qt.RichText)
+        nb = QVBoxLayout()
+        nb.setContentsMargins(0, 0, 0, 0)
+        nb.addLayout(Field("Name der Sicherung", self.name_edit))
+        nb.addWidget(self.name_hint)
+        self.f_name = QWidget()
+        self.f_name.setLayout(nb)
+        how.body.addWidget(self.f_name)
+        self.cb_comp.currentIndexChanged.connect(lambda _=0: self._name_preview())
         self.o_enc = QCheckBox("Mit Passwort verschlüsseln (AES-256, gpg)")
         self.o_enc.setEnabled(which("gpg"))
         self.pw1 = LineEdit(placeholder="Passwort")
@@ -10191,6 +10269,8 @@ class BackupTab(Page):
             i = cb.findData(val)
             if i >= 0:
                 cb.setCurrentIndex(i)
+        self.name_edit.setText(c.get("name_pattern", ""))
+        self._name_preview()
         self.o_verify.setChecked(c.get("verify", True))
         self.o_delete.setChecked(c.get("delete", True))
         self.o_root.setChecked(c.get("root", False))
@@ -10209,6 +10289,7 @@ class BackupTab(Page):
         c["compression"] = self.cb_comp.currentData()
         c["level"] = self.cb_level.currentData()
         c["keep"] = self.cb_keep.currentData()
+        c["name_pattern"] = self.name_edit.text().strip()
         c["verify"] = self.o_verify.isChecked()
         c["delete"] = self.o_delete.isChecked()
         c["root"] = self.o_root.isChecked()
@@ -10221,6 +10302,21 @@ class BackupTab(Page):
         cfg["history"] = backup_load().get("history", [])
         backup_save(cfg)
 
+    def _name_preview(self, *_):
+        from html import escape as html_escape
+        mode = getattr(self, "mode", "snapshot")
+        pat = self.name_edit.text().strip()
+        ex = backup_label(pat, datetime.now())
+        if mode == "archive" and not pat:
+            ex = f"{backup_host()}_{ex}"
+        ext = COMPRESSORS.get(self.cb_comp.currentData() or "zstd", COMPRESSORS["zstd"])[1] \
+            if mode == "archive" else ""
+        self.name_hint.setText(
+            f"Heute hieße die Sicherung: <b>{html_escape(ex + ext)}</b><br>"
+            "Platzhalter: <b>yyyy</b> Jahr · <b>mm</b> Monat · <b>dd</b> Tag · <b>HH</b> Stunde · <b>MM</b> Minute · "
+            "<b>SS</b> Sekunde – mit beliebigem Text davor oder dahinter, z. B. <b>Laptop_yyyy-mm-dd</b> oder "
+            "<b>yyyy-mm-dd vor Update</b>. Gibt es den Namen schon, hängt Tuxdex _2, _3 … an.")
+
     def _mode_changed(self, idx, save=True):
         self.mode = self.MODES[idx][0]
         self.mode_hint.setText(self.MODE_HINT[self.mode])
@@ -10230,6 +10326,8 @@ class BackupTab(Page):
         self.enc_row.setVisible(arch)
         self.o_verify.setVisible(arch)
         self.f_keep.setVisible(self.mode != "mirror")
+        self.f_name.setVisible(self.mode != "mirror")
+        self._name_preview()
         self.o_delete.setVisible(self.mode == "mirror")
         self._update_target_notes()
 

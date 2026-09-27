@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.0-beta.9
+- Backup: **Eigener Name für Sicherungen** mit Datum – z. B. `Laptop_yyyy-mm-dd` → `Laptop_2026-09-27`. Platzhalter `yyyy mm dd HH MM SS`, Text davor oder danach frei wählbar; Vorschau direkt unter dem Feld. Gilt für Snapshots und Archive, auch für geplante Backups. Doppelte Namen bekommen `_2`, `_3` …
+- Sortieren und Aufräumen alter Versionen nach dem echten Sicherungszeitpunkt, auch bei frei gewählten Namen.
+- Anleitung in der README unter „Backups benennen“.
+
 ## 1.6.0-beta.8
 - Mullvad: Kontonummer ist jetzt **komplett verdeckt**; das Auge daneben blendet sie ein und wieder aus.
 - Backup → Fortschritt: Statusfeld je Ziel passt sich dem Text an (war fest 120 px breit); Tempo lesbar als „16.45 MB/s“.
