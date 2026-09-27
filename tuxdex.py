@@ -120,6 +120,7 @@ MODULES = [
     ("flatpak", "Flatpak", "#8fa8ff"),
     ("disks", "Datenträger", "#d9b95c"),
     ("storage", "Speicher", "#56c2d6"),
+    ("backup", "Backup", "#e9c46a"),
     ("swap", "Swap", "#6cc56f"),
     ("tasks", "Taskmanager", "#b5d86b"),
     ("antivirus", "Antivirus", "#a98bf0"),
@@ -130,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.0.0"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -289,6 +290,10 @@ QToolTip { background: $bg2; color: $ink; border: 1px solid $line; padding: 4px 
 /* Panels */
 #Panel { background: $bg2; border: 1px solid $line; border-radius: 10px; }
 #PanelTitle { font-weight: 600; background: transparent; }
+#Panel[clickable="true"]:hover { border-color: $line_strong; }
+#Panel[clickable="true"]:focus { border: 2px solid $focus; }
+#Panel[selected="true"], #Panel[selected="true"]:hover { border: 1px solid $accent; background: $bg3; }
+#KvValue { font-family: "$mono"; }
 #Panel QLabel, #Panel QCheckBox { background: transparent; }
 
 /* Buttons */
@@ -383,7 +388,12 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 /* Dialoge */
 QDialog, QMessageBox { background: $bg2; }
-QMessageBox QLabel { background: transparent; }
+/* Feste Fläche statt transparent – sonst malen manche Plattform-Themes (KDE) die Labels schwarz */
+QDialog QLabel { background: $bg2; }
+QDialogButtonBox { background: $bg2; }
+QMessageBox QPushButton { min-width: 88px; }
+/* Reihenfolge wie in den eigenen Dialogen: Abbrechen links, Aktion rechts */
+QDialogButtonBox { button-layout: 3; }
 #DialogTitle { font-size: 14pt; font-weight: 600; }
 #Warn { color: $warn; }
 #Changed { color: $accent; font-size: 8pt; font-weight: 600; border: 1px solid $accent; border-radius: 3px; padding: 0 5px; }
@@ -400,6 +410,9 @@ QPushButton#SysHint:hover { background: $bg2; }
 QPushButton#UpdHint { background: transparent; color: $warn; border: 1px solid $warn; padding: 2px 10px;
     font-size: 9pt; }
 QPushButton#UpdHint:hover { background: $bg2; }
+QPushButton#Info { background: transparent; border: 0; border-radius: 11px; padding: 0; min-width: 0; }
+QPushButton#Info:hover { background: $bg3; }
+QPushButton#Info:focus { border: 2px solid $focus; }
 QPushButton#Gear { background: transparent; border: 0; border-radius: 6px; padding: 5px; min-width: 0; }
 QPushButton#Gear:hover { background: $bg2; }
 QPushButton#Gear:checked { background: $bg3; }
@@ -421,6 +434,26 @@ def _write_asset(name, svg):
     with open(path, "w") as f:
         f.write(svg)
     return path
+
+
+def tuxdex_palette():
+    """Eigene Farbpalette – sonst malt das Desktop-Theme (z. B. KDE Breeze) Fensterflächen in seinen Farben,
+    und Texte in Dialogen stehen auf andersfarbigen Kästen."""
+    from PySide6.QtGui import QPalette
+    pal = QPalette()
+    c = lambda k: QColor(COLORS[k])
+    for role, key in ((QPalette.Window, "bg2"), (QPalette.WindowText, "ink"), (QPalette.Base, "bg0"),
+                      (QPalette.AlternateBase, "bg1"), (QPalette.Text, "ink"), (QPalette.Button, "bg3"),
+                      (QPalette.ButtonText, "ink"), (QPalette.BrightText, "ink"), (QPalette.ToolTipBase, "bg2"),
+                      (QPalette.ToolTipText, "ink"), (QPalette.Highlight, "accent"),
+                      (QPalette.HighlightedText, "on_accent"), (QPalette.PlaceholderText, "muted"),
+                      (QPalette.Link, "accent"), (QPalette.LinkVisited, "accent_h"), (QPalette.Light, "bg3"),
+                      (QPalette.Midlight, "bg3"), (QPalette.Mid, "line"), (QPalette.Dark, "bg1"),
+                      (QPalette.Shadow, "bg0")):
+        pal.setColor(role, c(key))
+    for role, key in ((QPalette.WindowText, "muted"), (QPalette.Text, "muted"), (QPalette.ButtonText, "muted")):
+        pal.setColor(QPalette.Disabled, role, c(key))
+    return pal
 
 
 def apply_theme(app):
@@ -448,6 +481,7 @@ def apply_theme(app):
         f'<path d="M2.5 4.5l3.5 3.5 3.5-3.5" fill="none" stroke="{COLORS["ink"]}" stroke-width="1.6" '
         'stroke-linecap="round" stroke-linejoin="round"/></svg>'))
     app.setStyle("Fusion")
+    app.setPalette(tuxdex_palette())
     app.setStyleSheet(QSS.substitute(COLORS, check=check, arrow=arrow, sans=FONTS["sans"], mono=FONTS["mono"]))
 
 
@@ -470,6 +504,25 @@ def repolish(w):
 
 def which(cmd):
     return shutil.which(cmd) is not None
+
+
+try:
+    import ctypes
+    _LIBC = ctypes.CDLL("libc.so.6")
+    _LIBC.mallopt(-8, 2)          # M_ARENA_MAX: höchstens 2 Speicher-Pools, auch bei vielen Worker-Threads
+except Exception:
+    _LIBC = None
+
+
+def trim_memory():
+    """Freigegebenen Speicher ans System zurückgeben (glibc hält ihn sonst oft fest)."""
+    import gc
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
 
 
 def valid_pkg_tokens(text):
@@ -498,6 +551,9 @@ class _Invoker(QObject):
     def _run(self, fn):
         try:
             fn()
+        except RuntimeError as e:
+            if "already deleted" not in str(e):     # Tab wurde inzwischen abgebaut → Rückmeldung verwerfen
+                raise
         except Exception:
             import traceback
             tb = traceback.format_exc()
@@ -577,6 +633,81 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z
 PROMPT_END_RE = re.compile(r"(\[[^\[\]]{1,40}\]|[:?]|==>)\s*$")
 
 
+_ACTIVE_RUNS = set()        # laufende ProcessRun-Objekte (ein Tab mit laufendem Befehl wird nie abgebaut)
+_CHILDREN = set()           # alle gestarteten Hintergrundprozesse – werden beim Beenden von Tuxdex mit beendet
+
+
+def track(proc):
+    _CHILDREN.add(proc)
+    return proc
+
+
+def running_children():
+    return [p for p in list(_CHILDREN) if p.poll() is None]
+
+
+def stop_children(timeout=3):
+    """Beim Beenden: alle noch laufenden Kindprozesse (auch sudo …) beenden."""
+    procs = running_children()
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    end = time.time() + timeout
+    for p in procs:
+        try:
+            p.wait(max(0.1, end - time.time()))
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+def orphaned_jobs():
+    """Scans/Backups früherer Tuxdex-Sitzungen, die noch laufen: [(pid, name, rss_bytes, sekunden)]."""
+    mine = os.getpid()
+    res = []
+    try:
+        boot = float(_read("/proc/uptime").split()[0])
+        hz = os.sysconf("SC_CLK_TCK")
+    except Exception:
+        boot, hz = 0, 100
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        cmd = _read(f"/proc/{d}/cmdline").replace("\0", " ")
+        name = cmd.split(" ", 1)[0].rsplit("/", 1)[-1]
+        if not ((name == "clamscan" and "tuxdex/quarantine" in cmd) or
+                (name in ("rsync", "tar") and BACKUP_DIRNAME in cmd)):
+            continue
+        # gehört er zu diesem Tuxdex? Eltern-Kette hochlaufen
+        pid, ours = d, False
+        for _ in range(8):
+            st = _read(f"/proc/{pid}/stat")
+            ppid = st.rsplit(")", 1)[-1].split()[1] if ")" in st else "1"
+            if ppid in ("0", "1"):
+                break
+            if int(ppid) == mine:
+                ours = True
+                break
+            pid = ppid
+        if ours:
+            continue
+        rss = 0
+        m = re.search(r"^VmRSS:\s+(\d+)", _read(f"/proc/{d}/status"), re.M)
+        if m:
+            rss = int(m.group(1)) * 1024
+        try:
+            start = int(_read(f"/proc/{d}/stat").rsplit(")", 1)[-1].split()[19]) / hz
+            age = boot - start
+        except Exception:
+            age = 0
+        res.append((int(d), name, rss, age))
+    return res
+
+
 class ProcessRun:
     """Startet einen Prozess und streamt die Ausgabe ins LogView.
 
@@ -598,6 +729,7 @@ class ProcessRun:
         else:
             inner = cmd
         self.full_cmd = (["sudo", "-n"] + inner) if needs_sudo else inner
+        _ACTIVE_RUNS.add(self)
         threading.Thread(target=self._worker, daemon=True).start()
 
     # -- Steuerung (GUI-Thread) --
@@ -626,11 +758,17 @@ class ProcessRun:
 
     # -- Hintergrund --
     def _worker(self):
+        try:
+            self._work()
+        finally:
+            _ACTIVE_RUNS.discard(self)
+
+    def _work(self):
         env = {**os.environ, "COLUMNS": "110", "LINES": "40"}
         try:
-            self.proc = subprocess.Popen(
+            self.proc = track(subprocess.Popen(
                 self.full_cmd, stdin=subprocess.PIPE if self.interactive else subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=self.cwd)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=self.cwd))
         except Exception as e:
             msg = f"Fehler beim Start: {e}\n"
             if self.log is not None:
@@ -750,6 +888,25 @@ def Button(text, variant="ghost", on_click=None, tooltip=None):
         b.clicked.connect(on_click)
     if tooltip:
         b.setToolTip(tooltip)
+    return b
+
+
+INFO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="none"
+ stroke="{c}" stroke-width="1.3"/><rect x="7.3" y="7" width="1.4" height="4.6" rx=".7" fill="{c}"/>
+<circle cx="8" cy="4.9" r=".9" fill="{c}"/></svg>"""
+
+
+def info_button(title, text):
+    """Kleines (i): Tooltip beim Drüberfahren, Klick öffnet die Erklärung als Fenster."""
+    b = QPushButton()
+    b.setObjectName("Info")
+    b.setIcon(svg_icon(INFO_SVG.replace("{c}", COLORS["muted"]), 16))
+    b.setIconSize(QSize(16, 16))
+    b.setFixedSize(22, 22)
+    b.setCursor(Qt.PointingHandCursor)
+    b.setFocusPolicy(Qt.TabFocus)
+    b.setToolTip(text)
+    b.clicked.connect(lambda: show_info(b.window(), title, text))
     return b
 
 
@@ -1001,9 +1158,42 @@ class Page(QScrollArea):
 # Dialoge
 # --------------------------------------------------------------------------
 
+# Flache Dialog-Symbole in den Status-Farben statt der Symbole des System-Themes
+_MSG_ICONS = {
+    QMessageBox.Information: ("info", '<rect x="21.5" y="20" width="5" height="15" rx="2.5"/>'
+                                      '<circle cx="24" cy="13.5" r="3"/>'),
+    QMessageBox.Warning: ("warn", '<rect x="21.5" y="11" width="5" height="16" rx="2.5"/>'
+                                  '<circle cx="24" cy="34" r="3"/>'),
+    QMessageBox.Critical: ("danger", '<path d="M17 17l14 14M31 17l-14 14" stroke="{bg}" stroke-width="5" '
+                                     'stroke-linecap="round" fill="none"/>'),
+    QMessageBox.Question: ("accent", '<path d="M18.5 18.5a5.5 5.5 0 1 1 8 4.9c-1.6.8-2.5 2-2.5 3.6v1" '
+                                     'stroke="{bg}" stroke-width="4.5" stroke-linecap="round" fill="none"/>'
+                                     '<circle cx="24" cy="35" r="2.8"/>'),
+}
+
+
+def set_msg_icon(box, icon):
+    tone, glyph = _MSG_ICONS[icon]
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">'
+           f'<circle cx="24" cy="24" r="22" fill="{COLORS[tone]}"/>'
+           f'<g fill="{COLORS["bg2"]}">{glyph.replace("{bg}", COLORS["bg2"])}</g></svg>')
+    box.setIconPixmap(svg_icon(svg, 40).pixmap(40, 40))
+
+
+def style_msg_box(box):
+    """Luft wie bei den eigenen Dialogen, Button-Varianten nachträglich anwenden."""
+    box.layout().setContentsMargins(24, 20, 24, 16)
+    box.layout().setHorizontalSpacing(16)
+    box.layout().setVerticalSpacing(12)
+    for b in box.buttons():
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFocusPolicy(Qt.TabFocus)  # Fokusring nur bei Tastatur-Navigation
+        repolish(b)
+
+
 def _msg(parent, icon, title, text, buttons):
     box = QMessageBox(parent)
-    box.setIcon(icon)
+    set_msg_icon(box, icon)
     box.setWindowTitle(title)
     box.setText(text)
     result = {}
@@ -1013,6 +1203,7 @@ def _msg(parent, icon, title, text, buttons):
         result[b] = value
         if value:
             box.setDefaultButton(b)
+    style_msg_box(box)
     box.exec()
     return result.get(box.clickedButton(), False)
 
@@ -1035,7 +1226,9 @@ def show_error(parent, title, text):
 
 
 class PasswordDialog(QDialog):
-    def __init__(self, parent, title="Administrator-Passwort"):
+    def __init__(self, parent, title="Administrator-Passwort", heading="sudo-Passwort eingeben",
+                 note="Wird für die Dauer des Programmlaufs gemerkt – du musst es danach nicht erneut eingeben.",
+                 ok_text="Anmelden"):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -1047,9 +1240,8 @@ class PasswordDialog(QDialog):
         lay.addWidget(spacer)
         lay.setContentsMargins(32, 28, 32, 24)
         lay.setSpacing(12)
-        lay.addWidget(Label("sudo-Passwort eingeben", "DialogTitle"))
-        lay.addWidget(Label("Wird für die Dauer des Programmlaufs gemerkt – "
-                            "du musst es danach nicht erneut eingeben.", "Small", wrap=True))
+        lay.addWidget(Label(heading, "DialogTitle"))
+        lay.addWidget(Label(note, "Small", wrap=True))
         self.entry = LineEdit()
         self.entry.setEchoMode(QLineEdit.Password)
         self.entry.setMinimumHeight(42)
@@ -1063,7 +1255,7 @@ class PasswordDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(Button("Abbrechen", "ghost", self.reject))
-        ok = Button("Anmelden", "primary", self.accept)
+        ok = Button(ok_text, "primary", self.accept)
         ok.setDefault(True)
         btns.addWidget(ok)
         lay.addSpacing(8)
@@ -1924,12 +2116,13 @@ class SoftwareTab(Page):
                     cell.setFont(mono)
                 if c == 2:
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if c:
+                if c == 5:
                     cell.setToolTip(it["desc"])
                 self.table.setItem(r, c, cell)
         self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         self._update_sel()
+        QTimer.singleShot(500, trim_memory)
 
     # ---- Auswahl ------------------------------------------------------------
 
@@ -2764,6 +2957,7 @@ class FlatpakTab(Page):
         if not a:
             return
         box = QMessageBox(self)
+        set_msg_icon(box, QMessageBox.Question)
         box.setWindowTitle("Deinstallieren")
         box.setText(f"{a['name']} deinstallieren?")
         box.setInformativeText("Persönliche Daten der App (~/.var/app) können mit gelöscht werden.")
@@ -2772,6 +2966,9 @@ class FlatpakTab(Page):
         wipe.setProperty("variant", "danger")
         keep.setProperty("variant", "primary")
         cancel = box.addButton("Abbrechen", QMessageBox.RejectRole)
+        cancel.setProperty("variant", "ghost")
+        box.setDefaultButton(keep)
+        style_msg_box(box)
         box.exec()
         if box.clickedButton() not in (keep, wipe):
             return
@@ -3660,11 +3857,14 @@ class BarList(QWidget):
         p.end()
 
 
-def _du_size(path, use_sudo):
+def _du_size(path, use_sudo, timeout=120):
+    """Belegter Platz in Bytes; None bei Zeitüberschreitung."""
     cmd = (["sudo", "-n"] if use_sudo else []) + ["du", "-sxB1", path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return int(r.stdout.split()[0]) if r.stdout.strip() else 0
+    except subprocess.TimeoutExpired:
+        return None
     except Exception:
         return 0
 
@@ -3727,8 +3927,30 @@ class StorageTab(Page):
                                  "Die größten 25 Einträge werden gezeigt.", "Hint", wrap=True))
         self.lay.addWidget(ana)
 
-        cl = Panel("Typische Platzfresser & Aufräumen",
-                   [Button("Größen ermitteln", "ghost", self.scan_cleanup)])
+        self.b_measure = Button("Größen ermitteln", "ghost", self.scan_cleanup)
+        cl = Panel("Typische Platzfresser & Aufräumen", [self.b_measure])
+        # Status wie beim Virenscan: läuft/fertig · was gerade gemessen wird · Fortschritt
+        self.cl_status = QWidget()
+        stl = QVBoxLayout(self.cl_status)
+        stl.setContentsMargins(0, 0, 0, 6)
+        stl.setSpacing(6)
+        srow = QHBoxLayout()
+        srow.setSpacing(12)
+        self.cl_badge = StatusBadge("off", "Nicht aktiv")
+        srow.addWidget(self.cl_badge)
+        self.cl_time = Label("", "Value")
+        srow.addWidget(self.cl_time)
+        srow.addStretch(1)
+        stl.addLayout(srow)
+        self.cl_bar = ProgressBar()
+        stl.addWidget(self.cl_bar)
+        self.cl_info = Label("", "Hint", wrap=True)
+        stl.addWidget(self.cl_info)
+        self.cl_status.hide()
+        cl.body.addWidget(self.cl_status)
+        self.cl_running = False
+        self.cl_timer = QTimer(self)
+        self.cl_timer.timeout.connect(self._cl_tick)
         self.cl_grid = QGridLayout()
         self.cl_grid.setHorizontalSpacing(16)
         self.cl_grid.setVerticalSpacing(10)
@@ -3855,25 +4077,60 @@ class StorageTab(Page):
         home = os.path.expanduser("~")
         self.cleanup = [
             {"key": "pkgcache", "name": "Pacman-Paketcache", "path": "/var/cache/pacman/pkg",
-             "action": "Alte Versionen löschen", "hint": "behält die 2 neuesten Versionen je Paket"},
+             "action": "Alte Versionen löschen", "hint": "behält die 2 neuesten Versionen je Paket",
+             "info": "pacman hebt jede heruntergeladene Paketversion in /var/cache/pacman/pkg auf – über Monate "
+                     "werden das schnell mehrere GB.\n\n„Alte Versionen löschen“ führt paccache -rk2 aus: je Paket "
+                     "bleiben die 2 neuesten Versionen liegen (für ein Zurückstufen, falls ein Update Probleme macht). "
+                     "Zusätzlich entfernt paccache -ruk0 alle Dateien von Paketen, die gar nicht mehr installiert sind. "
+                     "Ohne paccache (Paket pacman-contrib) nutzt Tuxdex pacman -Sc: dann bleibt nur die installierte "
+                     "Version im Cache.\n\nBraucht root. Installierte Programme bleiben unberührt."},
             {"key": "orphans", "name": "Verwaiste Pakete", "path": "pacman -Qdtq",
-             "action": "Entfernen", "hint": "Abhängigkeiten, die nichts mehr braucht"},
+             "action": "Entfernen", "hint": "Abhängigkeiten, die nichts mehr braucht",
+             "info": "Pakete, die einmal als Abhängigkeit eines anderen Programms installiert wurden, das es nicht "
+                     "mehr gibt (pacman -Qdtq).\n\n„Entfernen“ zeigt vorher die Liste und löscht sie dann mit "
+                     "pacman -Rns – samt ihrer eigenen, ebenfalls unnötigen Abhängigkeiten und Konfigurationsdateien.\n\n"
+                     "Selbst installierte Programme sind nie dabei. Braucht root."},
             {"key": "journal", "name": "System-Logs (Journal)", "path": "/var/log/journal",
-             "action": "Auf 200 MB kürzen", "hint": ""},
+             "action": "Auf 200 MB kürzen", "hint": "",
+             "info": "Das System-Protokoll (systemd-journald) sammelt Meldungen aller Dienste und des Kernels.\n\n"
+                     "„Auf 200 MB kürzen“ führt journalctl --vacuum-size=200M aus: die ältesten Einträge werden "
+                     "gelöscht, bis das Protokoll noch 200 MB belegt. Neue Meldungen werden weiter geschrieben.\n\n"
+                     "Dauerhaft begrenzen: Sicherheit → Checkliste → System-Protokoll. Braucht root."},
             {"key": "trash", "name": "Papierkorb", "path": os.path.join(home, ".local/share/Trash"),
-             "action": "Leeren", "hint": ""},
+             "action": "Leeren", "hint": "",
+             "info": "Dateien, die du im Dateimanager gelöscht hast, landen zuerst hier (~/.local/share/Trash).\n\n"
+                     "„Leeren“ löscht sie endgültig – sie lassen sich danach nicht mehr wiederherstellen."},
             {"key": "flatpak", "name": "Flatpak (System + Benutzer)", "path": "/var/lib/flatpak",
-             "action": "Unbenutzte entfernen", "hint": "entfernt ungenutzte Laufzeiten"},
+             "action": "Unbenutzte entfernen", "hint": "entfernt ungenutzte Laufzeiten",
+             "info": "Flatpak-Apps brauchen Laufzeiten (z. B. GNOME- oder KDE-Plattform). Nach Updates oder dem "
+                     "Deinstallieren von Apps bleiben alte Versionen liegen.\n\n„Unbenutzte entfernen“ führt "
+                     "flatpak uninstall --unused aus. Apps und ihre Daten "
+                     "bleiben erhalten."},
             {"key": "usercache", "name": "Benutzer-Cache (~/.cache)", "path": os.path.join(home, ".cache"),
-             "action": None, "hint": "nur Anzeige – Programme legen hier Zwischendaten ab"},
+             "action": None, "hint": "nur Anzeige – Programme legen hier Zwischendaten ab",
+             "info": "Browser, Thumbnail-Vorschauen, Spiele-Launcher und viele andere Programme legen in ~/.cache "
+                     "Zwischendaten ab. Löschen ist grundsätzlich möglich – die Programme bauen den Cache neu auf.\n\n"
+                     "Tuxdex zeigt hier nur die Größe, weil laufende Programme beim Löschen durcheinanderkommen können. "
+                     "Welcher Ordner groß ist, siehst du oben in der Speicher-Übersicht."},
             {"key": "paru", "name": "AUR-Build-Cache (paru)", "path": os.path.join(home, ".cache/paru"),
-             "action": None, "hint": "nur Anzeige"},
-            {"key": "docker", "name": "Docker", "path": "/var/lib/docker", "action": None, "hint": "nur Anzeige"},
+             "action": None, "hint": "nur Anzeige",
+             "info": "paru baut AUR-Pakete in ~/.cache/paru/clone und hebt Quellcode und fertige Pakete auf.\n\n"
+                     "Zum Aufräumen im Terminal: paru -Sc (fragt nach, was gelöscht wird)."},
+            {"key": "docker", "name": "Docker", "path": "/var/lib/docker", "action": None, "hint": "nur Anzeige",
+             "info": "Docker speichert Images, Container und Volumes in /var/lib/docker.\n\nZum Aufräumen im "
+                     "Terminal: docker system prune (entfernt gestoppte Container, ungenutzte Netzwerke und "
+                     "Images ohne Namen; mit -a auch alle unbenutzten Images). Volumes bleiben, außer mit --volumes."},
         ]
         for i, c in enumerate(self.cleanup):
             txt = QVBoxLayout()
             txt.setSpacing(0)
-            txt.addWidget(Label(c["name"]))
+            head = QHBoxLayout()
+            head.setSpacing(6)
+            head.addWidget(Label(c["name"]))
+            if c.get("info"):
+                head.addWidget(info_button(c["name"], c["info"]))
+            head.addStretch(1)
+            txt.addLayout(head)
             txt.addWidget(Label(short_path(c["path"]) + (f" · {c['hint']}" if c["hint"] else ""), "Hint"))
             self.cl_grid.addLayout(txt, i, 0)
             c["size_lbl"] = Label("—", "Value")
@@ -3886,41 +4143,87 @@ class StorageTab(Page):
                 self.cl_grid.addWidget(b, i, 2)
 
     def scan_cleanup(self):
+        if self.cl_running:
+            return
         use_sudo = self.app.priv.is_authenticated_nonblocking()
         for c in self.cleanup:
             c["size_lbl"].setText("…")
+        self.cl_running = True
+        self.cl_started = time.time()
+        self.cl_active = {}                # key -> Name, solange gemessen wird
+        self.cl_done = 0
+        self.cl_sizes = {}
+        self.b_measure.setEnabled(False)
+        self.b_measure.setText("Ermittle …")
+        self.cl_status.show()
+        self.cl_badge.set("ok", "Läuft")
+        self._cl_tick()
+        self.cl_timer.start(500)
+
+        def measure(c):
+            k = c["key"]
+            if k == "orphans":
+                r = subprocess.run(["pacman", "-Qdtq"], capture_output=True, text=True, timeout=60) \
+                    if which("pacman") else None
+                pkgs = r.stdout.split() if r and r.returncode == 0 else []
+                size = 0
+                if pkgs:
+                    qi = subprocess.run(["pacman", "-Qi"] + pkgs, capture_output=True, text=True, timeout=60,
+                                        env={**os.environ, "LC_ALL": "C"}).stdout
+                    for m in re.finditer(r"^Installed Size\s*:\s*([\d.,]+)\s*(\S+)", qi, re.M):
+                        size += float(m.group(1).replace(",", ".")) * _SIZE_UNITS.get(m.group(2), 1)
+                return size, (f"{len(pkgs)} Pakete · {fmt_bytes(size)}" if pkgs else "keine")
+            paths = ["/var/lib/flatpak", os.path.expanduser("~/.local/share/flatpak")] if k == "flatpak" \
+                else [c["path"]]
+            paths = [p for p in paths if os.path.exists(p)]
+            if not paths:
+                return 0, "—" if k == "flatpak" else "nicht vorhanden"
+            sizes = [_du_size(p, use_sudo) for p in paths]
+            if any(x is None for x in sizes):
+                return 0, "zu viele Dateien"
+            return sum(sizes), fmt_bytes(sum(sizes))
+
+        def job(c):
+            ui(lambda: self.cl_active.__setitem__(c["key"], c["name"]))
+            try:
+                res = measure(c)
+            except Exception:
+                res = (0, "Fehler")
+            ui(lambda: self._cl_result(c, *res))
 
         def worker():
-            res = {}
-            for c in self.cleanup:
-                k = c["key"]
-                if k == "orphans":
-                    r = subprocess.run(["pacman", "-Qdtq"], capture_output=True, text=True) \
-                        if which("pacman") else None
-                    pkgs = r.stdout.split() if r and r.returncode == 0 else []
-                    size = 0
-                    if pkgs:
-                        qi = subprocess.run(["pacman", "-Qi"] + pkgs, capture_output=True, text=True,
-                                            env={**os.environ, "LC_ALL": "C"}).stdout
-                        for m in re.finditer(r"^Installed Size\s*:\s*([\d.,]+)\s*(\S+)", qi, re.M):
-                            size += float(m.group(1).replace(",", ".")) * _SIZE_UNITS.get(m.group(2), 1)
-                    res[k] = (size, f"{len(pkgs)} Pakete · {fmt_bytes(size)}" if pkgs else "keine")
-                elif k == "flatpak":
-                    size = sum(_du_size(p, use_sudo) for p in ("/var/lib/flatpak",
-                               os.path.expanduser("~/.local/share/flatpak")) if os.path.exists(p))
-                    res[k] = (size, fmt_bytes(size) if size else "—")
-                else:
-                    p = c["path"]
-                    size = _du_size(p, use_sudo) if os.path.exists(p) else 0
-                    res[k] = (size, fmt_bytes(size) if os.path.exists(p) else "nicht vorhanden")
-            ui(lambda: self._show_cleanup(res))
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(job, self.cleanup))
+            ui(self._cl_finished)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_cleanup(self, res):
-        for c in self.cleanup:
-            size, txt = res.get(c["key"], (0, "—"))
-            c["size_lbl"].setText(txt)
+    def _cl_result(self, c, size, txt):
+        c["size_lbl"].setText(txt)
+        self.cl_active.pop(c["key"], None)
+        self.cl_sizes[c["key"]] = size
+        self.cl_done += 1
+        self._cl_tick()
+
+    def _cl_tick(self):
+        el = int(time.time() - self.cl_started)
+        n = len(self.cleanup)
+        self.cl_time.setText(f"{self.cl_done} / {n}  ·  {el // 60}:{el % 60:02d}")
+        self.cl_bar.set(self.cl_done / n * 100, f"{self.cl_done / n * 100:.0f} %")
+        if self.cl_running:
+            self.cl_info.setText("Misst gerade: " + (", ".join(self.cl_active.values()) or "…")
+                                 + " – große Ordner mit vielen Dateien brauchen etwas.")
+
+    def _cl_finished(self):
+        self.cl_running = False
+        self.cl_timer.stop()
+        self._cl_tick()
+        self.b_measure.setEnabled(True)
+        self.b_measure.setText("Größen ermitteln")
+        el = int(time.time() - self.cl_started)
+        self.cl_badge.set("ok", "Fertig")
+        self.cl_info.setText(f"Alle {len(self.cleanup)} Bereiche gemessen · Dauer {el // 60}:{el % 60:02d}")
 
     def clean(self, key):
         home = os.path.expanduser("~")
@@ -4085,6 +4388,29 @@ class StatTile(QFrame):
             self.big.setObjectName("MidValue")
         lay.addWidget(self.spark)
 
+    def make_clickable(self, on_click):
+        """Kachel öffnet per Klick (oder Enter/Leertaste) die Detail-Ansicht."""
+        self._on_click = on_click
+        self.setProperty("clickable", True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.TabFocus)
+        self.setToolTip("Anklicken für Details")
+
+    def set_selected(self, on):
+        self.setProperty("selected", on)
+        repolish(self)
+
+    def mousePressEvent(self, e):
+        if getattr(self, "_on_click", None) and e.button() == Qt.LeftButton:
+            self._on_click()
+        super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        if getattr(self, "_on_click", None) and e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self._on_click()
+            return
+        super().keyPressEvent(e)
+
     def set(self, big, sub, value=None):
         self.big.setText(big)
         self.sub.setText(sub)
@@ -4138,6 +4464,129 @@ class _Spark(QWidget):
         p.setPen(Qt.NoPen)
         p.drawEllipse(QRectF(pts[-1][0] - 3, pts[-1][1] - 3, 6, 6))
         p.end()
+
+
+def clear_layout(lay):
+    while lay.count():
+        it = lay.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
+        elif it.layout():
+            clear_layout(it.layout())
+
+
+class DetailPanel(QFrame):
+    """Details zur angeklickten Leistungs-Kachel: Kennzahlen oben, Eigenschaften darunter."""
+    COLS = 4
+
+    def __init__(self, on_close, on_device):
+        super().__init__()
+        self.setObjectName("Panel")
+        self._keys = None
+        self._cells = {}
+        self._bars = []
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 16, 16)
+        outer.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.title = Label("", "PanelTitle")
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.dev = QComboBox()
+        self.dev.setMinimumWidth(220)
+        self.dev.hide()
+        self.dev.currentIndexChanged.connect(lambda _: on_device(self.dev.currentData()))
+        head.addWidget(self.dev)
+        head.addWidget(Button("Schließen", "ghost", on_close, "Details ausblenden (oder Kachel erneut anklicken)"))
+        outer.addLayout(head)
+        self.stats = QGridLayout()
+        self.stats.setHorizontalSpacing(24)
+        self.stats.setVerticalSpacing(12)
+        outer.addLayout(self.stats)
+        self.sep = QFrame()
+        self.sep.setFixedHeight(1)
+        self.sep.setStyleSheet(f"background: {COLORS['line']};")
+        outer.addWidget(self.sep)
+        self.kv = QGridLayout()
+        self.kv.setHorizontalSpacing(24)
+        self.kv.setVerticalSpacing(6)
+        outer.addLayout(self.kv)
+        self.bar_title = Label("", "FieldLabel")
+        outer.addWidget(self.bar_title)
+        self.bar_box = QVBoxLayout()
+        self.bar_box.setSpacing(10)
+        outer.addLayout(self.bar_box)
+        self.hint = Label("", "Hint", wrap=True)
+        outer.addWidget(self.hint)
+
+    def set_devices(self, items, current):
+        """items: [(Anzeige, Schlüssel)] – Auswahl nur bei mehreren Geräten."""
+        self.dev.blockSignals(True)
+        if [self.dev.itemData(i) for i in range(self.dev.count())] != [k for _, k in items]:
+            self.dev.clear()
+            for text, key in items:
+                self.dev.addItem(text, key)
+        i = self.dev.findData(current)
+        if i >= 0:
+            self.dev.setCurrentIndex(i)
+        self.dev.setVisible(len(items) > 1)
+        self.dev.blockSignals(False)
+
+    def loading(self, title):
+        self.title.setText(title)
+        self._keys = None
+        clear_layout(self.stats)
+        clear_layout(self.kv)
+        clear_layout(self.bar_box)
+        self._bars = []
+        self.bar_title.hide()
+        self.hint.setText("Wird ermittelt …")
+        self.dev.hide()
+
+    def show_data(self, title, stats, kv, bars=(), bar_title="", hint=""):
+        self.title.setText(title)
+        keys = ([k for k, _ in stats], [k for k, _ in kv], len(bars))
+        if keys != self._keys:
+            self._keys = keys
+            clear_layout(self.stats)
+            clear_layout(self.kv)
+            clear_layout(self.bar_box)
+            self._cells = {}
+            for i, (k, _) in enumerate(stats):
+                box = QVBoxLayout()
+                box.setSpacing(2)
+                box.addWidget(Label(k.upper(), "FieldLabel"))
+                v = Label("", "MidValue")
+                box.addWidget(v)
+                self._cells[("s", k)] = v
+                self.stats.addLayout(box, i // self.COLS, i % self.COLS)
+            for c in range(self.COLS):
+                self.stats.setColumnStretch(c, 1)
+            for i, (k, _) in enumerate(kv):
+                self.kv.addWidget(Label(k, "Muted"), i, 0, Qt.AlignTop)
+                v = Label("", "KvValue", wrap=True)
+                v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                self._cells[("k", k)] = v
+                self.kv.addWidget(v, i, 1)
+            self.kv.setColumnStretch(1, 1)
+            self._bars = []
+            for _ in bars:
+                b = UsageBar("", 0, 0, unit="B")
+                self._bars.append(b)
+                self.bar_box.addWidget(b)
+        for k, v in stats:
+            self._cells[("s", k)].setText(str(v))
+        for k, v in kv:
+            self._cells[("k", k)].setText(str(v))
+        for b, (label, used, total) in zip(self._bars, bars):
+            b.label, b.used, b.total = label, used or 0, total or 0
+            b.update()
+        self.sep.setVisible(bool(stats) and bool(kv))
+        self.bar_title.setText(bar_title.upper())
+        self.bar_title.setVisible(bool(bars) and bool(bar_title))
+        self.hint.setText(hint)
+        self.hint.setVisible(bool(hint))
 
 
 # --------------------------------------------------------------------------
@@ -4343,6 +4792,375 @@ BAT_STATUS = {"Charging": "lädt", "Discharging": "Akkubetrieb", "Full": "voll",
               "Unknown": "unbekannt"}
 
 
+# --------------------------------------------------------------------------
+# Detail-Infos für die Leistungsansicht (Kachel anklicken) – ohne root
+# --------------------------------------------------------------------------
+
+def _size_str(s):
+    """'32K' / '1024K' / '16M' aus sysfs → Bytes"""
+    m = re.match(r"(\d+)\s*([KMG]?)", s or "")
+    if not m:
+        return 0
+    return int(m.group(1)) * {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}[m.group(2)]
+
+
+def fmt_ghz(khz):
+    return f"{khz / 1e6:.2f} GHz" if khz else "—"
+
+
+def fmt_uptime(secs):
+    d, rem = divmod(int(secs), 86400)
+    h, rem = divmod(rem, 3600)
+    return f"{d}:{h:02d}:{rem // 60:02d}:{rem % 60:02d}"
+
+
+def _cmd_out(cmd, timeout=4):
+    if not which(cmd[0]):
+        return ""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+_CPU_STATIC = None
+
+
+def cpu_static():
+    """Einmal ermittelte CPU-Daten: Modell, Takt, Sockel, Kerne, Caches, Virtualisierung."""
+    global _CPU_STATIC
+    if _CPU_STATIC is not None:
+        return _CPU_STATIC
+    base = "/sys/devices/system/cpu"
+    info = _read("/proc/cpuinfo")
+    flags = next((l.split(":", 1)[1].split() for l in info.splitlines() if l.startswith(("flags", "Features"))), [])
+    sockets = {l.split(":")[1].strip() for l in info.splitlines() if l.startswith("physical id")}
+    cores, threads = cpu_threads_cores()
+    c0 = f"{base}/cpu0/cpufreq"
+    base_khz = next((int(v) for v in (_first_line(f"{c0}/base_frequency"),
+                                      _first_line(f"{c0}/amd_pstate_nominal_freq"),
+                                      _first_line(f"{c0}/bios_limit")) if v.isdigit()), None)
+    max_khz = _first_line(f"{c0}/cpuinfo_max_freq")
+    # Caches: je (Ebene, Typ) die Summe aller unterschiedlichen Instanzen
+    caches, seen = {}, set()
+    try:
+        cpus = [d for d in os.listdir(base) if re.match(r"cpu\d+$", d)]
+    except Exception:
+        cpus = []
+    for c in cpus:
+        cdir = f"{base}/{c}/cache"
+        try:
+            idx = [d for d in os.listdir(cdir) if d.startswith("index")]
+        except Exception:
+            continue
+        for i in idx:
+            lvl, typ = _first_line(f"{cdir}/{i}/level"), _first_line(f"{cdir}/{i}/type")
+            shared = _first_line(f"{cdir}/{i}/shared_cpu_list")
+            key = (lvl, typ, shared)
+            if not lvl or key in seen:
+                continue
+            seen.add(key)
+            name = f"L{lvl}"
+            caches[name] = caches.get(name, 0) + _size_str(_first_line(f"{cdir}/{i}/size"))
+    virt = "AMD-V" if "svm" in flags else "Intel VT-x" if "vmx" in flags else None
+    if virt and os.path.exists("/dev/kvm"):
+        virt = "KVM / " + virt
+    vm = _cmd_out(["systemd-detect-virt", "--vm"]).strip()
+    if not vm:
+        vm = "ja" if "hypervisor" in flags else "none"
+    _CPU_STATIC = {
+        "model": cpu_model(), "base": base_khz, "max": int(max_khz) if max_khz.isdigit() else None,
+        "sockets": len(sockets) or 1, "cores": cores, "threads": threads, "caches": caches,
+        "virt": virt or "nicht unterstützt", "vm": "Nein" if vm == "none" else f"Ja ({vm})",
+        "driver": _first_line(f"{c0}/scaling_driver") or "—",
+    }
+    return _CPU_STATIC
+
+
+def cpu_live():
+    c0 = "/sys/devices/system/cpu/cpu0/cpufreq"
+    fnr = _read("/proc/sys/fs/file-nr").split()
+    boost = _first_line("/sys/devices/system/cpu/cpufreq/boost")
+    return {"governor": _first_line(f"{c0}/scaling_governor") or "—",
+            "epp": _first_line(f"{c0}/energy_performance_preference") or "—",
+            "handles": int(fnr[0]) if fnr and fnr[0].isdigit() else None,
+            "boost": {"1": "an", "0": "aus"}.get(boost, "—")}
+
+
+def fans():
+    """[(Name, Chip, U/min)] aus /sys/class/hwmon"""
+    out = []
+    base = "/sys/class/hwmon"
+    try:
+        mons = sorted(os.listdir(base))
+    except Exception:
+        return out
+    for m in mons:
+        chip = _first_line(f"{base}/{m}/name")
+        try:
+            files = sorted(f for f in os.listdir(f"{base}/{m}") if re.match(r"fan\d+_input$", f))
+        except Exception:
+            continue
+        for f in files:
+            v = _first_line(f"{base}/{m}/{f}")
+            if not v.isdigit():
+                continue
+            label = _first_line(f"{base}/{m}/{f.replace('_input', '_label')}")
+            out.append((label or f"Lüfter {len(out)}", chip, int(v)))
+    return out
+
+
+_MEM_HW = None
+
+
+def memory_hw():
+    """Takt, Steckplätze, Bauform, Typ – aus den udev-Daten der DMI-Tabelle (lesbar ohne root)."""
+    global _MEM_HW
+    if _MEM_HW is not None:
+        return _MEM_HW
+    props = {}
+    for line in _cmd_out(["udevadm", "info", "--query=property", "--path=/sys/devices/virtual/dmi/id"]).splitlines():
+        k, _, v = line.partition("=")
+        props[k] = v
+    devs = {}
+    for k, v in props.items():
+        m = re.match(r"MEMORY_DEVICE_(\d+)_(\w+)$", k)
+        if m:
+            devs.setdefault(m.group(1), {})[m.group(2)] = v
+    present = [d for d in devs.values() if d.get("PRESENT", "1") != "0" and d.get("SIZE", "0") not in ("0", "")]
+    hw = {}
+    if devs:
+        hw["slots"] = f"{len(present)} von {props.get('MEMORY_ARRAY_NUM_DEVICES') or len(devs)}"
+    if present:
+        d = present[0]
+        speed = d.get("CONFIGURED_SPEED_MTS") or d.get("SPEED_MTS")
+        if speed:
+            hw["speed"] = f"{speed} MT/s"
+        for key, name in (("TYPE", "type"), ("FORM_FACTOR", "form"), ("MANUFACTURER", "vendor")):
+            if d.get(key) and d[key] not in ("Unknown", "Other"):
+                hw[name] = d[key]
+            elif d.get(key):
+                hw[name] = {"Other": "Sonstige (meist verlötet)", "Unknown": "unbekannt"}[d[key]]
+    _MEM_HW = hw
+    return hw
+
+
+def zram_stats():
+    """(Originalgröße, komprimiert) aller zram-Geräte"""
+    orig = comp = 0
+    try:
+        devs = [d for d in os.listdir("/sys/block") if d.startswith("zram")]
+    except Exception:
+        devs = []
+    for d in devs:
+        f = _read(f"/sys/block/{d}/mm_stat").split()
+        if len(f) >= 3:
+            orig += int(f[0])
+            comp += int(f[2])
+    return (orig, comp) if devs else None
+
+
+def swap_devices():
+    """[(Gerät, Typ, Größe, belegt, Priorität)] aus /proc/swaps"""
+    out = []
+    for line in _read("/proc/swaps").splitlines()[1:]:
+        f = line.split()
+        if len(f) >= 5:
+            out.append((f[0], f[1], int(f[2]) * 1024, int(f[3]) * 1024, f[4]))
+    return out
+
+
+def diskstats():
+    """{Laufwerk: (gelesen B, geschrieben B, E/A-Zeit ms, Anfragen, Wartezeit ms)} physischer Laufwerke"""
+    out = {}
+    for line in _read("/proc/diskstats").splitlines():
+        f = line.split()
+        if len(f) > 13 and re.match(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|mmcblk\d+|hd[a-z]+)$", f[2]):
+            out[f[2]] = (int(f[5]) * 512, int(f[9]) * 512, int(f[12]),
+                         int(f[3]) + int(f[7]), int(f[6]) + int(f[10]))
+    return out
+
+
+_DISK_STATIC = {}
+
+
+def disk_static(name):
+    """Größe, Modell, Seriennummer, Typ, Partitionen eines Laufwerks (30 s zwischengespeichert)"""
+    hit = _DISK_STATIC.get(name)
+    if hit and time.time() - hit[0] < 30:
+        return hit[1]
+    res = _disk_static(name)
+    _DISK_STATIC[name] = (time.time(), res)
+    return res
+
+
+def _disk_static(name):
+    sysd = f"/sys/block/{name}"
+    size = _first_line(f"{sysd}/size")
+    rot = _first_line(f"{sysd}/queue/rotational")
+    typ = "NVMe" if name.startswith("nvme") else "SD/eMMC" if name.startswith("mmcblk") else \
+        "Festplatte (HDD)" if rot == "1" else "SSD"
+    if _first_line(f"{sysd}/removable") == "1" or "usb" in os.path.realpath(sysd):
+        typ += " · USB/wechselbar"
+    wwn = _first_line(f"{sysd}/device/wwid") or _first_line(f"{sysd}/wwid")
+    parts = []
+    try:
+        data = json.loads(_cmd_out(["lsblk", "-J", "-b", "-o", "NAME,PATH,FSTYPE,MOUNTPOINT,FSUSED,FSSIZE,SIZE",
+                                    f"/dev/{name}"]) or "{}")
+        stack = list(data.get("blockdevices", [{}])[0].get("children", []))
+        while stack:
+            c = stack.pop(0)
+            stack[0:0] = c.get("children", []) or []
+            parts.append({"path": c.get("path") or c.get("name"), "fs": c.get("fstype") or "",
+                          "mount": c.get("mountpoint") or "", "used": c.get("fsused"),
+                          "fssize": c.get("fssize"), "size": c.get("size")})
+    except Exception:
+        pass
+    return {"size": int(size) * 512 if size.isdigit() else None,
+            "model": (_first_line(f"{sysd}/device/model") or "").strip() or "—",
+            "serial": _first_line(f"{sysd}/device/serial") or "—",
+            "wwn": wwn or "—", "type": typ, "parts": parts,
+            "system": any(p["mount"] == "/" for p in parts),
+            "formatted": sum(int(p["fssize"]) for p in parts if str(p.get("fssize") or "").isdigit())}
+
+
+def _hwmon_dir(dev):
+    try:
+        h = os.listdir(f"{dev}/hwmon")
+        return f"{dev}/hwmon/{h[0]}" if h else None
+    except Exception:
+        return None
+
+
+def _dpm(path):
+    """(aktuell, höchster) Takt aus pp_dpm_sclk/mclk-Zeilen wie '1: 2100Mhz *'"""
+    cur = top = None
+    for line in _read(path).splitlines():
+        m = re.search(r"(\d+)\s*Mhz", line, re.I)
+        if m:
+            v = int(m.group(1))
+            top = max(top or 0, v)
+            if "*" in line:
+                cur = v
+    return cur, top
+
+
+_GPU_STATIC = {}
+
+
+def gpu_static(card):
+    if card in _GPU_STATIC:
+        return _GPU_STATIC[card]
+    dev = f"/sys/class/drm/{card}/device"
+    real = os.path.realpath(dev)
+    drv = os.path.basename(os.path.realpath(f"{dev}/driver")) if os.path.exists(f"{dev}/driver") else "—"
+
+    def link(kind):
+        sp, wd = _first_line(f"{dev}/{kind}_link_speed"), _first_line(f"{dev}/{kind}_link_width")
+        gen = {"2.5": 1, "5.0": 2, "8.0": 3, "16.0": 4, "32.0": 5, "64.0": 6}
+        m = re.match(r"([\d.]+)", sp)
+        if not m or not wd:
+            return None
+        g = gen.get(m.group(1))
+        return f"PCIe Gen {g} x{wd}" if g else f"{sp} x{wd}"
+    gl = ""
+    out = _cmd_out(["glxinfo", "-B"], 5)
+    m = re.search(r"OpenGL core profile version string:\s*([\d.]+)", out) or \
+        re.search(r"OpenGL version string:\s*([\d.]+)", out)
+    if m:
+        gl = m.group(1)
+    vk = ""
+    m = re.search(r"apiVersion\s*=\s*([\d.]+)", _cmd_out(["vulkaninfo", "--summary"], 6))
+    if m:
+        vk = m.group(1)
+    st = {"driver": drv, "bus": os.path.basename(real) if re.match(r"[0-9a-f]{4}:", os.path.basename(real)) else "—",
+          "link": link("current"), "link_max": link("max"), "gl": gl or "—", "vk": vk or "—"}
+    _GPU_STATIC[card] = st
+    return st
+
+
+def gpu_live(g, nv_idx=0):
+    """Takt, Leistung, Speicher, Video-Engines, Temperatur, Lüfter einer Grafikkarte"""
+    card = g.get("card", "")
+    dev = f"/sys/class/drm/{card}/device"
+    d = {}
+    if card.startswith("card"):
+        d["clk"], d["clk_max"] = _dpm(f"{dev}/pp_dpm_sclk")
+        d["mclk"], d["mclk_max"] = _dpm(f"{dev}/pp_dpm_mclk")
+        if d["clk"] is None:   # Intel
+            cur, top = _first_line(f"/sys/class/drm/{card}/gt_act_freq_mhz") or \
+                _first_line(f"/sys/class/drm/{card}/gt_cur_freq_mhz"), _first_line(f"/sys/class/drm/{card}/gt_max_freq_mhz")
+            if cur.isdigit():
+                d["clk"], d["clk_max"] = int(cur), int(top) if top.isdigit() else None
+        hw = _hwmon_dir(dev)
+        if hw:
+            for n in ("power1_average", "power1_input"):
+                v = _first_line(f"{hw}/{n}")
+                if v.isdigit():
+                    d["power"] = int(v) / 1e6
+                    break
+            cap = _first_line(f"{hw}/power1_cap")
+            if cap.isdigit():
+                d["power_cap"] = int(cap) / 1e6
+            t = _first_line(f"{hw}/temp1_input")
+            if t.lstrip("-").isdigit():
+                d["temp"] = int(t) / 1000
+            fan = _first_line(f"{hw}/fan1_input")
+            if fan.isdigit():
+                d["fan"] = f"{fan} U/min"
+    if g.get("name", "").startswith("NVIDIA") and which("nvidia-smi"):
+        q = ("clocks.gr,clocks.max.gr,clocks.mem,clocks.max.mem,power.draw,power.limit,utilization.encoder,"
+             "utilization.decoder,temperature.gpu,fan.speed,pcie.link.gen.current,pcie.link.gen.max,"
+             "pcie.link.width.current,pcie.link.width.max,driver_version,pci.bus_id")
+        out = _cmd_out(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"])
+        rows = [[x.strip() for x in l.split(",")] for l in out.strip().splitlines()]
+        nv = [x for x in rows if len(x) == 16]
+        if nv:
+            r = nv[min(nv_idx, len(nv) - 1)]
+
+            def num(x):
+                try:
+                    return float(x)
+                except ValueError:
+                    return None
+            d.update({"clk": num(r[0]), "clk_max": num(r[1]), "mclk": num(r[2]), "mclk_max": num(r[3]),
+                      "power": num(r[4]), "power_cap": num(r[5]), "enc": num(r[6]), "dec": num(r[7]),
+                      "temp": num(r[8]), "nv_driver": r[14], "nv_bus": r[15]})
+            if num(r[9]) is not None:
+                d["fan"] = f"{r[9]} %"
+            if r[10].isdigit():
+                d["nv_link"] = f"PCIe Gen {r[10]} x{r[12]}"
+                d["nv_link_max"] = f"PCIe Gen {r[11]} x{r[13]}"
+    return d
+
+
+def net_static(name):
+    speed = _first_line(f"/sys/class/net/{name}/speed")
+    return {"speed": f"{int(speed) / 1000:g} Gbit/s" if speed.isdigit() and int(speed) >= 1000
+            else f"{speed} Mbit/s" if speed.isdigit() and int(speed) > 0 else "—",
+            "mtu": _first_line(f"/sys/class/net/{name}/mtu") or "—",
+            "mac": _first_line(f"/sys/class/net/{name}/address") or "—",
+            "driver": os.path.basename(os.path.realpath(f"/sys/class/net/{name}/device/driver"))
+            if os.path.exists(f"/sys/class/net/{name}/device/driver") else "—"}
+
+
+def battery_extra(name):
+    p = f"/sys/class/power_supply/{name}"
+
+    def num(n):
+        v = _first_line(f"{p}/{n}")
+        return int(v) if v.lstrip("-").isdigit() else None
+    volt = num("voltage_now")
+    e_full, e_design = num("energy_full"), num("energy_full_design")
+    if e_full is None and num("charge_full") and volt:
+        e_full = num("charge_full") * volt / 1e6
+        e_design = (num("charge_full_design") or 0) * volt / 1e6 or None
+    return {"cycles": num("cycle_count"), "tech": _first_line(f"{p}/technology") or "—",
+            "volt": volt / 1e6 if volt else None,
+            "full": e_full / 1e6 if e_full else None, "design": e_design / 1e6 if e_design else None,
+            "limit": num("charge_control_end_threshold")}
+
+
 def net_counters():
     """{iface: (rx_bytes, tx_bytes)}"""
     out = {}
@@ -4423,6 +5241,69 @@ def internet_route_dev():
         return None
 
 
+DNS_PROVIDERS = {
+    "1.1.1.1": "Cloudflare", "1.0.0.1": "Cloudflare", "1.1.1.2": "Cloudflare", "1.1.1.3": "Cloudflare",
+    "2606:4700:4700::1111": "Cloudflare", "2606:4700:4700::1001": "Cloudflare",
+    "8.8.8.8": "Google", "8.8.4.4": "Google", "2001:4860:4860::8888": "Google", "2001:4860:4860::8844": "Google",
+    "9.9.9.9": "Quad9", "149.112.112.112": "Quad9", "2620:fe::fe": "Quad9", "2620:fe::9": "Quad9",
+    "10.64.0.1": "Mullvad", "100.100.100.100": "Tailscale",
+    "208.67.222.222": "OpenDNS", "208.67.220.220": "OpenDNS",
+    "94.140.14.14": "AdGuard", "94.140.15.15": "AdGuard",
+}
+
+
+def _dns_provider(ip, link):
+    if ip in DNS_PROVIDERS:
+        return DNS_PROVIDERS[ip]
+    if link.startswith(("wg0-mullvad", "mullvad")) or ip.startswith("194.242.2."):
+        return "Mullvad"
+    if ip.startswith("127.") or ip == "::1":
+        return "Lokaler DNS-Dienst"
+    try:
+        import ipaddress
+        if ipaddress.ip_address(ip).is_private:
+            return "Router im lokalen Netz"
+    except ValueError:
+        pass
+    return "Internetanbieter oder unbekannter Anbieter"
+
+
+def dns_state():
+    """Welcher DNS-Server beantwortet gerade die Anfragen?
+    {server, provider, link, dot} – dot: DNS-over-TLS aktiv. None, wenn nichts gefunden."""
+    route = internet_route_dev() or ""
+    links = []                 # (link, aktueller Server, DoT)
+    if which("resolvectl"):
+        try:
+            out = subprocess.run(["resolvectl", "status"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            out = ""
+        for block in re.split(r"\n(?=Global|Link \d)", out):
+            head = block.splitlines()[0] if block.strip() else ""
+            m = re.match(r"Link \d+ \(([^)]+)\)", head)
+            link = m.group(1) if m else ("" if head.startswith("Global") else None)
+            if link is None:
+                continue
+            cur = re.search(r"Current DNS Server:\s*(\S+)", block)
+            if cur:
+                links.append((link, cur.group(1), "+DNSOverTLS" in block))
+    if links:
+        link, srv, dot = next((l for l in links if l[0] == route), None) or \
+            next((l for l in links if l[0] == ""), None) or links[0]
+    else:
+        ns = [l.split()[1] for l in _read("/etc/resolv.conf").splitlines()
+              if l.startswith("nameserver") and len(l.split()) > 1]
+        if not ns:
+            return None
+        link, srv, dot = "", ns[0], False
+    name = srv.split("#", 1)[1] if "#" in srv else ""
+    ip = srv.split("#", 1)[0].split("%", 1)[0]
+    if ip.count(":") == 1:          # IPv4 mit Port
+        ip = ip.split(":", 1)[0]
+    return {"server": ip, "provider": _dns_provider(ip, link) + (f" ({name})" if name else ""),
+            "link": link or route, "dot": dot}
+
+
 def tailscale_state():
     """None (nicht installiert) oder dict(running, state, exit_node, ips)"""
     if not which("tailscale"):
@@ -4458,6 +5339,7 @@ def vpn_state(ifaces=None):
     if which("mullvad"):
         rc, st = _mullvad(["status"])
         res["mullvad"] = st
+        res["mv_lockdown"] = _on(_mullvad(["lockdown-mode", "get"])[1], "block traffic", "lockdown")
     for i in ifaces:
         if i["kind"] != "VPN" or i["name"].startswith("tailscale"):
             continue
@@ -4474,6 +5356,261 @@ def public_ip_info():
     req = urllib.request.Request("https://am.i.mullvad.net/json", headers={"User-Agent": "tuxdex"})
     with urllib.request.urlopen(req, timeout=8) as r:
         return json.loads(r.read().decode())
+
+
+def _pkg_version(*names):
+    """(name, version) des ersten installierten Pakets aus names – sonst (None, None)."""
+    for n in names:
+        try:
+            r = subprocess.run(["pacman", "-Q", n], capture_output=True, text=True, timeout=5)
+        except Exception:
+            return None, None
+        if r.returncode == 0 and r.stdout.split():
+            return n, r.stdout.split()[1]
+    return None, None
+
+
+def _pending_update(pkg):
+    """Neue Version aus der letzten Update-Prüfung oder None."""
+    for u in _load_json(UPDATE_CACHE, {}).get("updates", []):
+        if u.get("name") == pkg:
+            return u.get("new")
+    return None
+
+
+def version_status():
+    """Versionsstand von Grafiktreiber, CPU-Microcode, BIOS/UEFI, Kernel und Firmware.
+    [(titel, ton, kurz, detail)]"""
+    res = []
+    # --- Grafiktreiber ---
+    base = "/sys/class/drm"
+    seen = set()
+    try:
+        cards = sorted(c for c in os.listdir(base) if re.match(r"card\d+$", c))
+    except Exception:
+        cards = []
+    for c in cards:
+        dev = f"{base}/{c}/device"
+        try:
+            drv = os.path.basename(os.readlink(f"{dev}/driver"))
+        except OSError:
+            continue
+        vendor = _first_line(f"{dev}/vendor").replace("0x", "").lower()
+        device = _first_line(f"{dev}/device").replace("0x", "").lower()
+        if (vendor, device) in seen:
+            continue
+        seen.add((vendor, device))
+        name = _pci_name(vendor, device)
+        if drv == "nvidia":
+            ver = _first_line("/sys/module/nvidia/version")
+            pkg, pver = _pkg_version("nvidia", "nvidia-open", "nvidia-dkms", "nvidia-open-dkms", "nvidia-lts",
+                                     "nvidia-open-lts", "nvidia-580xx-dkms", "nvidia-470xx-dkms")
+            upkg, _ = _pkg_version("nvidia-utils")
+            new = _pending_update(pkg) if pkg else None
+            new = new or (_pending_update("nvidia-utils") if upkg else None)
+            txt = f"{name} · NVIDIA-Treiber {ver or pver or '?'}" + (f" (Paket {pkg})" if pkg else "")
+            if ver and pver and not pver.startswith(ver):
+                res.append(("Grafiktreiber", "warn", "Neustart nötig",
+                            txt + f" · installiert ist schon {pver} – nach einem Neustart aktiv."))
+            elif new:
+                res.append(("Grafiktreiber", "warn", "Update da", txt + f" · neue Version {new} verfügbar."))
+            else:
+                res.append(("Grafiktreiber", "ok", "Aktuell", txt + "."))
+        else:
+            mpkg, mver = _pkg_version("mesa")
+            vk = {"amdgpu": "vulkan-radeon", "radeon": "vulkan-radeon", "i915": "vulkan-intel",
+                  "xe": "vulkan-intel", "nouveau": "vulkan-nouveau"}.get(drv)
+            vpkg, vver = _pkg_version(vk) if vk else (None, None)
+            txt = f"{name} · Kernel-Treiber {drv} ({os.uname().release})"
+            if mver:
+                txt += f" · Mesa {mver.split('-')[0]}"
+            if vver:
+                txt += f" · Vulkan {vver.split('-')[0]}"
+            new = (_pending_update("mesa") if mpkg else None) or (_pending_update(vpkg) if vpkg else None)
+            if drv in ("simpledrm", "efifb", "vesafb"):
+                res.append(("Grafiktreiber", "warn", "Notfall-Treiber",
+                            f"{name} läuft nur mit dem einfachen Bildschirmtreiber {drv} – keine Beschleunigung."))
+            elif new:
+                res.append(("Grafiktreiber", "warn", "Update da", txt + f" · Mesa/Vulkan {new} verfügbar."))
+            else:
+                res.append(("Grafiktreiber", "ok" if mver else "info", "Aktuell" if mver else "Mesa fehlt",
+                            txt + ("." if mver else " · Mesa ist nicht installiert (keine 3D-Beschleunigung).")))
+    # --- CPU-Microcode ---
+    rev = re.search(r"^microcode\s*:\s*(\S+)", _read("/proc/cpuinfo"), re.M)
+    pkg, ok = microcode_state()
+    if pkg is None:
+        res.append(("CPU-Microcode", "off", "VM", "Virtuelle Maschine – der Host liefert den Microcode."
+                    + (f" Revision {rev.group(1)}." if rev else "")))
+    else:
+        _, pver = _pkg_version(pkg)
+        new = _pending_update(pkg)
+        txt = f"{cpu_model()} · Revision {rev.group(1) if rev else '?'}"
+        if not ok:
+            res.append(("CPU-Microcode", "warn", "Fehlt", txt + f" · {pkg} ist nicht installiert – nur der Stand "
+                        "aus dem BIOS ist aktiv. Im Tab Sicherheit installierbar."))
+        elif new:
+            res.append(("CPU-Microcode", "warn", "Update da", txt + f" · {pkg} {pver} → {new} verfügbar."))
+        else:
+            res.append(("CPU-Microcode", "ok", "Aktuell", txt + f" · {pkg} {pver}."))
+    # --- Mainboard / BIOS ---
+    dmi = "/sys/class/dmi/id"
+    board = " ".join(x for x in (_first_line(f"{dmi}/board_vendor"), _first_line(f"{dmi}/board_name")) if x)
+    bver, bdate = _first_line(f"{dmi}/bios_version"), _first_line(f"{dmi}/bios_date")
+    age = None
+    try:
+        age = (datetime.now() - datetime.strptime(bdate, "%m/%d/%Y")).days / 365.25
+    except ValueError:
+        pass
+    txt = f"{board or 'Mainboard unbekannt'} · BIOS/UEFI {bver or '?'}"
+    if bdate:
+        try:
+            txt += f" vom {datetime.strptime(bdate, '%m/%d/%Y'):%d.%m.%Y}"
+        except ValueError:
+            txt += f" vom {bdate}"
+    if age is not None and age >= 2:
+        res.append(("Mainboard & BIOS", "info", f"{age:.0f} Jahre alt",
+                    txt + " · beim Hersteller nach einem neueren BIOS schauen (Sicherheits- und Stabilitätsfixes)."))
+    else:
+        res.append(("Mainboard & BIOS", "ok" if age is not None else "off",
+                    f"{age * 12:.0f} Monate alt" if age is not None else "Unbekannt", txt + "."))
+    # --- Kernel ---
+    kpkg = {"lts": "linux-lts", "zen": "linux-zen", "hardened": "linux-hardened"}
+    rel = os.uname().release
+    kp = next((v for k, v in kpkg.items() if k in rel), "linux")
+    _, kver = _pkg_version(kp)
+    new = _pending_update(kp)
+    kbase = re.match(r"\d+(?:\.\d+)+", kver or "")
+    if kbase and not re.match(re.escape(kbase.group(0)) + r"(?![\d.])", rel):
+        res.append(("Kernel", "warn", "Neustart nötig", f"Läuft: {rel} · installiert: {kver} – nach einem Neustart "
+                    "aktiv."))
+    elif new:
+        res.append(("Kernel", "warn", "Update da", f"{rel} · {kp} {new} verfügbar."))
+    else:
+        res.append(("Kernel", "ok", "Aktuell", f"{rel}" + (f" ({kp})" if kver else "") + "."))
+    # --- Firmware über fwupd ---
+    if which("fwupdmgr"):
+        try:
+            r = subprocess.run(["fwupdmgr", "get-updates", "--json", "--no-unreported-check",
+                                "--no-metadata-check"], capture_output=True, text=True, timeout=25)
+            data = json.loads(r.stdout or "{}")
+            devs = [d.get("Name", "?") for d in data.get("Devices", []) if d.get("Releases")]
+            if devs:
+                res.append(("Firmware (fwupd)", "warn", f"{len(devs)} Updates",
+                            "Firmware-Updates verfügbar für: " + ", ".join(devs[:6])
+                            + ". Einspielen mit: fwupdmgr update"))
+            else:
+                res.append(("Firmware (fwupd)", "ok", "Aktuell", "fwupd kennt keine neueren Firmware-Versionen "
+                            "(BIOS, SSD, Dock …)."))
+        except Exception:
+            res.append(("Firmware (fwupd)", "off", "Nicht prüfbar", "fwupd hat nicht geantwortet."))
+    else:
+        res.append(("Firmware (fwupd)", "off", "Nicht installiert", "Optional: Mit fwupd lassen sich BIOS-, SSD- "
+                    "und Geräte-Firmware prüfen und aktualisieren (Paket fwupd)."))
+    return res
+
+
+def proxy_state():
+    """Eingestellter Proxy: [(quelle, beschreibung)] – leer, wenn keiner gesetzt ist."""
+    res = []
+    for k in ("all_proxy", "https_proxy", "http_proxy", "socks_proxy"):
+        v = os.environ.get(k) or os.environ.get(k.upper())
+        if v:
+            res.append(("Umgebungsvariable", f"{k} = {re.sub(r'//[^@/]+@', '//…@', v)}"))
+    if which("gsettings"):
+        try:
+            mode = subprocess.run(["gsettings", "get", "org.gnome.system.proxy", "mode"], capture_output=True,
+                                  text=True, timeout=3).stdout.strip().strip("'")
+            if mode == "manual":
+                parts = []
+                for proto in ("https", "http", "socks"):
+                    h = subprocess.run(["gsettings", "get", f"org.gnome.system.proxy.{proto}", "host"],
+                                       capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
+                    pt = subprocess.run(["gsettings", "get", f"org.gnome.system.proxy.{proto}", "port"],
+                                        capture_output=True, text=True, timeout=3).stdout.strip()
+                    if h:
+                        parts.append(f"{proto.upper()} {h}:{pt}")
+                res.append(("GNOME", "manuell · " + (", ".join(parts) or "ohne Adresse")))
+            elif mode == "auto":
+                url = subprocess.run(["gsettings", "get", "org.gnome.system.proxy", "autoconfig-url"],
+                                     capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
+                res.append(("GNOME", "automatisch (PAC)" + (f" · {url}" if url else "")))
+        except Exception:
+            pass
+    kio = _read(os.path.expanduser("~/.config/kioslaverc"))
+    m = re.search(r"^ProxyType=(\d)", kio, re.M)
+    if m and m.group(1) != "0":
+        kinds = {"1": "manuell", "2": "automatisch (PAC)", "3": "automatisch (WPAD)", "4": "aus Umgebungsvariablen"}
+        detail = kinds.get(m.group(1), "an")
+        for key in ("httpsProxy", "httpProxy", "socksProxy"):
+            mm = re.search(rf"^{key}=(.+)$", kio, re.M)
+            if mm and mm.group(1).strip() and m.group(1) == "1":
+                detail += f" · {mm.group(1).strip().replace(' ', ':')}"
+                break
+        res.append(("KDE", detail))
+    return res
+
+
+def _get_json(url, timeout=10):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "tuxdex"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def _get_text(url, timeout=10):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "tuxdex"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode().strip()
+
+
+def dns_leak_servers():
+    """DNS-Leak-Test über bash.ws: löst zufällige Namen über den System-DNS auf und fragt ab, welche
+    DNS-Server sie angefragt haben. [(ip, land, anbieter/ASN)]"""
+    import socket
+    tid = _get_text("https://bash.ws/id")
+    if not re.match(r"^\w+$", tid):
+        raise ValueError("unerwartete Antwort von bash.ws")
+    for i in range(6):
+        try:
+            socket.getaddrinfo(f"{i}.{tid}.bash.ws", None)
+        except OSError:
+            pass                 # NXDOMAIN ist erwartet – die Anfrage selbst zählt
+    data = _get_json(f"https://bash.ws/dnsleak/test/{tid}?json", timeout=15)
+    return [(d.get("ip", "?"), d.get("country_name") or d.get("country") or "", d.get("asn") or "")
+            for d in data if d.get("type") == "dns"]
+
+
+def ip_reputation():
+    """Wie Webseiten deine IP einstufen (ipapi.is): dict(ip, org, country, city, vpn, vpn_name, proxy, tor,
+    hosting)."""
+    d = _get_json("https://api.ipapi.is/")
+    comp, asn, loc = d.get("company") or {}, d.get("asn") or {}, d.get("location") or {}
+    vpn = d.get("vpn") or {}
+    return {"ip": d.get("ip", "?"), "org": comp.get("name") or asn.get("org") or "",
+            "asn": f"AS{asn.get('asn')}" if asn.get("asn") else "", "country": loc.get("country", ""),
+            "city": loc.get("city", ""), "vpn": bool(d.get("is_vpn")),
+            "vpn_name": vpn.get("service") or vpn.get("name") or "", "proxy": bool(d.get("is_proxy")),
+            "tor": bool(d.get("is_tor")), "hosting": bool(d.get("is_datacenter"))}
+
+
+def vpn_active(v):
+    """Läuft der Internetverkehr gerade durch ein VPN?"""
+    mv = (v.get("mullvad") or "").lower()
+    ts = v.get("tailscale") or {}
+    return mv.startswith("connected") or bool(ts.get("running") and ts.get("exit_node")) or \
+        (v.get("route_dev") or "") in v.get("others", [])
+
+
+def leak_test():
+    """Kompletter Test – jeder Teil einzeln, damit ein ausgefallener Dienst nicht alles verhindert."""
+    res = {"vpn": vpn_active(vpn_state()), "local_dns": dns_state(), "proxy": proxy_state()}
+    for key, fn in (("rep", ip_reputation), ("dns", dns_leak_servers), ("mullvad", public_ip_info)):
+        try:
+            res[key] = fn()
+        except Exception as e:
+            res[key + "_err"] = str(e)[:120]
+    return res
 
 
 def system_summary():
@@ -4563,11 +5700,13 @@ def app_for_process(pid, name, cmd):
     cg = _read(f"/proc/{pid}/cgroup")
     mt = re.search(r"app-flatpak-([\w.\-]+?)-\d+\.scope", cg) or \
         re.search(r"app-(?:[\w]+-)?([\w.\-]+?)(?:@[\w]+\.service|-\d+\.scope)", cg)
+    via = None
     if mt:
         key = mt.group(1).lower()
         for k in (key, key.split(".")[-1]):
             if k in m:
-                return m[k]
+                via = m[k]
+                break
     cand = [name.lower()]
     first = cmd.split(" ", 1)[0] if cmd and not cmd.startswith("[") else ""
     if first:
@@ -4579,6 +5718,13 @@ def app_for_process(pid, name, cmd):
     for c in cand:
         if c in m:
             return m[c]
+    if via:
+        # läuft in der Gruppe einer App: eigene Hilfsprozesse zählen zur App, root-Prozesse (sudo clamscan …)
+        # bekommen ihren echten Namen, damit ihr Speicher nicht der App zugerechnet wird
+        uid = re.search(r"^Uid:\s+(\d+)", _read(f"/proc/{pid}/status"), re.M)
+        if uid and int(uid.group(1)) != os.getuid():
+            return via[0], f"{name} · gestartet von {via[1]}"
+        return via
     return None
 
 
@@ -4684,6 +5830,245 @@ def energy_label(cpu):
     return "sehr hoch"
 
 
+
+# ---- Autostart & Bootzeit -------------------------------------------------
+
+AUTOSTART_USER = os.path.join(os.path.expanduser("~/.config"), "autostart")
+AUTOSTART_SYSTEM = "/etc/xdg/autostart"
+APP_DIRS = [os.path.expanduser("~/.local/share/applications"), "/usr/share/applications",
+            "/var/lib/flatpak/exports/share/applications",
+            os.path.expanduser("~/.local/share/flatpak/exports/share/applications")]
+
+
+def read_desktop(path):
+    """[Desktop Entry] als dict (nur Hauptgruppe, erster Wert gewinnt)."""
+    entry, main = {}, False
+    for line in _read(path).splitlines():
+        if line.startswith("["):
+            main = line.strip() == "[Desktop Entry]"
+        elif main and "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            entry.setdefault(k.strip(), v.strip())
+    return entry
+
+
+def _desktop_off(e):
+    return e.get("Hidden", "").lower() == "true" or e.get("X-GNOME-Autostart-enabled", "").lower() == "false"
+
+
+def _desktop_shown(e):
+    """Gilt der Eintrag in dieser Desktop-Umgebung (OnlyShowIn/NotShowIn)?"""
+    cur = [d.lower() for d in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":") if d]
+    only = [d.lower() for d in e.get("OnlyShowIn", "").split(";") if d]
+    not_ = [d.lower() for d in e.get("NotShowIn", "").split(";") if d]
+    if only and cur and not set(only) & set(cur):
+        return False
+    return not (not_ and set(not_) & set(cur))
+
+
+def autostart_entries():
+    """[{id, name, icon, exec, comment, on, source: user|system|both, path}] – Benutzer überschreibt System."""
+    res = {}
+    for src, d in (("system", AUTOSTART_SYSTEM), ("user", AUTOSTART_USER)):
+        try:
+            files = sorted(f for f in os.listdir(d) if f.endswith(".desktop"))
+        except OSError:
+            continue
+        for fn in files:
+            e = read_desktop(os.path.join(d, fn))
+            if not e:
+                continue
+            prev = res.get(fn)
+            if src == "system" and not _desktop_shown(e):
+                continue
+            item = {"id": fn, "name": e.get("Name") or fn[:-8], "icon": e.get("Icon", ""),
+                    "exec": e.get("Exec", ""), "comment": e.get("Comment", ""), "on": not _desktop_off(e),
+                    "source": "both" if prev else src, "path": os.path.join(d, fn)}
+            if prev and not item["exec"]:            # Benutzer-Kopie nur mit Hidden=true
+                item.update(name=prev["name"], icon=prev["icon"], exec=prev["exec"], comment=prev["comment"])
+            res[fn] = item
+    return sorted(res.values(), key=lambda x: x["name"].lower())
+
+
+def autostart_set(entry, on):
+    """Ein/aus nach XDG-Regel: eigene Kopie in ~/.config/autostart mit Hidden=true/false."""
+    os.makedirs(AUTOSTART_USER, exist_ok=True)
+    dst = os.path.join(AUTOSTART_USER, entry["id"])
+    src = dst if os.path.exists(dst) else os.path.join(AUTOSTART_SYSTEM, entry["id"])
+    lines = _read(src).splitlines() or ["[Desktop Entry]", "Type=Application", f"Name={entry['name']}",
+                                         f"Exec={entry['exec']}"]
+    out, main, done = [], False, False
+    for line in lines:
+        if line.startswith("["):
+            if main and not done:
+                out.append(f"Hidden={'false' if on else 'true'}")
+                done = True
+            main = line.strip() == "[Desktop Entry]"
+        elif main and line.split("=", 1)[0].strip() in ("Hidden", "X-GNOME-Autostart-enabled"):
+            continue
+        out.append(line)
+    if not done:
+        out.append(f"Hidden={'false' if on else 'true'}")
+    with open(dst, "w") as f:
+        f.write("\n".join(out) + "\n")
+
+
+def autostart_add(desktop_path):
+    os.makedirs(AUTOSTART_USER, exist_ok=True)
+    dst = os.path.join(AUTOSTART_USER, os.path.basename(desktop_path))
+    shutil.copyfile(desktop_path, dst)
+    autostart_set({"id": os.path.basename(desktop_path), "name": "", "exec": ""}, True)
+    return dst
+
+
+def installed_apps():
+    """[(name, pfad)] aller sichtbaren Programme – für „Programm hinzufügen“."""
+    seen, res = set(), []
+    for d in APP_DIRS:
+        try:
+            files = os.listdir(d)
+        except OSError:
+            continue
+        for fn in files:
+            if not fn.endswith(".desktop") or fn in seen:
+                continue
+            e = read_desktop(os.path.join(d, fn))
+            if e.get("Type", "Application") != "Application" or e.get("NoDisplay", "").lower() == "true" \
+                    or not e.get("Exec") or not _desktop_shown(e):
+                continue
+            seen.add(fn)
+            res.append((e.get("Name", fn[:-8]), os.path.join(d, fn), e.get("Icon", "")))
+    return sorted(res, key=lambda x: x[0].lower())
+
+
+def user_services():
+    """Aktivierte systemd-Benutzerdienste: [(unit, beschreibung, aktiv)]"""
+    try:
+        out = subprocess.run(["systemctl", "--user", "list-unit-files", "--type=service", "--state=enabled",
+                              "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    res = []
+    for line in out.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        if not unit or "@" in unit:
+            continue
+        try:
+            desc = subprocess.run(["systemctl", "--user", "show", unit, "-p", "Description", "--value"],
+                                  capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            desc = ""
+        res.append((unit, desc, svc_user_active(unit)))
+    return res
+
+
+def svc_user_active(unit):
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True,
+                              timeout=3).stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+# Dienste, die oft den Start bremsen und meist gefahrlos entfallen können
+SLOW_HINTS = {
+    "NetworkManager-wait-online.service": "Wartet beim Start aufs Netzwerk – auf Desktops meist unnötig.",
+    "systemd-networkd-wait-online.service": "Wartet beim Start aufs Netzwerk – auf Desktops meist unnötig.",
+}
+
+
+class TimeBar(QWidget):
+    """Name links, Dauer rechts, dünner Balken darunter (Bootzeit)."""
+
+    def __init__(self, label, value, frac, warn=False):
+        super().__init__()
+        self.label, self.value, self.frac, self.warn = label, value, max(0.0, min(1.0, frac)), warn
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        return QSize(320, 30)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        p.setFont(QFont(FONTS["mono"], 10))
+        p.setPen(QColor(COLORS["ink"]))
+        p.drawText(QRectF(0, 0, w - 90, 18), Qt.AlignLeft | Qt.AlignVCenter, self.label)
+        p.drawText(QRectF(w - 90, 0, 90, 18), Qt.AlignRight | Qt.AlignVCenter, self.value)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(COLORS["bg3"]))
+        p.drawRoundedRect(QRectF(0, 22, w, 6), 3, 3)
+        p.setBrush(QColor(COLORS["warn" if self.warn else "accent"]))
+        if self.frac > 0:
+            p.drawRoundedRect(QRectF(0, 22, max(6, w * self.frac), 6), 3, 3)
+        p.end()
+
+
+def _secs(txt):
+    """„1min 2.345s“, „850ms“ → Sekunden"""
+    total = 0.0
+    for num, unit in re.findall(r"([\d.]+)\s*(min|ms|us|s|h)\b", txt):
+        total += float(num) * {"h": 3600, "min": 60, "s": 1, "ms": 0.001, "us": 1e-6}[unit]
+    return total
+
+
+def boot_times():
+    """{phases: [(name, sek)], total, target, blame: [(sek, unit)]} über systemd-analyze – None ohne systemd."""
+    if not which("systemd-analyze"):
+        return None
+    try:
+        t = subprocess.run(["systemd-analyze", "time"], capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "LC_ALL": "C"}).stdout
+    except Exception:
+        return None
+    m = re.search(r"Startup finished in (.+?)=\s*(.+)", t)
+    if not m:
+        return {"error": (t.strip() or "Der Start ist noch nicht abgeschlossen.")}
+    names = {"firmware": "Firmware (UEFI/BIOS)", "loader": "Bootloader", "kernel": "Kernel",
+             "initrd": "Initramfs", "userspace": "System (Dienste)"}
+    phases = [(names.get(k, k), _secs(v)) for v, k in re.findall(r"([\d.]+(?:min|ms|us|s|h)(?:\s*[\d.]+(?:ms|s))?)"
+                                                                    r"\s*\((\w+)\)", m.group(1))]
+    tgt = re.search(r"graphical\.target reached after (.+?) in userspace", t)
+    blame = []
+    try:
+        b = subprocess.run(["systemd-analyze", "blame", "--no-pager"], capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "LC_ALL": "C"}).stdout
+        for line in b.splitlines():
+            parts = line.strip().rsplit(" ", 1)
+            if len(parts) == 2:
+                blame.append((_secs(parts[0]), parts[1]))
+    except Exception:
+        pass
+    # Dienste, die ein Timer auslöst (snapper-cleanup, man-db …), laufen nach dem Start – nicht mitzählen
+    try:
+        timers = subprocess.run(["systemctl", "list-unit-files", "--type=timer", "--no-legend", "--no-pager"],
+                                capture_output=True, text=True, timeout=5).stdout
+        timed = {l.split()[0].removesuffix(".timer") + ".service" for l in timers.splitlines() if l.split()}
+    except Exception:
+        timed = set()
+    blame = [b for b in blame if b[1] not in timed]
+    return {"phases": phases, "total": _secs(m.group(2)), "target": _secs(tgt.group(1)) if tgt else None,
+            "blame": sorted(blame, reverse=True)[:12]}
+
+
+class _SortItem(QTreeWidgetItem):
+    """Baumzeile, die nach Zahlen statt nach Text sortiert (CPU, RAM …)."""
+
+    def __init__(self, texts, keys):
+        super().__init__(texts)
+        self.keys = keys
+
+    def __lt__(self, other):
+        c = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        a, b = self.keys[c], getattr(other, "keys", [None] * 9)[c]
+        try:
+            return a < b
+        except TypeError:
+            return str(a) < str(b)
+
+
 class TaskTab(Page):
     COLS = [("Name", 230), ("PID", 70), ("Benutzer", 95), ("CPU", 70), ("Arbeitsspeicher", 115),
             ("Datenträger", 100), ("Energie (gesch.)", 120), ("Status", 100), ("Befehl", 300)]
@@ -4703,7 +6088,7 @@ class TaskTab(Page):
 
         self.badge = StatusBadge("info", "Live · alle 2 s")
         self.pause_btn = Button("Pausieren", "ghost", self.toggle_pause)
-        self.seg = Segmented(["Prozesse", "Leistung", "System"], self._switch)
+        self.seg = Segmented(["Prozesse", "Leistung", "System", "Autostart"], self._switch)
         self.lay.addLayout(page_header("Taskmanager", self.seg, self.badge, self.pause_btn))
 
         self.views = QStackedWidget()
@@ -4734,28 +6119,34 @@ class TaskTab(Page):
         self.filter.setMinimumHeight(38)
         self.filter.currentIndexChanged.connect(lambda _: self._render())
         top.addWidget(self.filter)
+        self.cb_group = QCheckBox("Nach Programm gruppieren")
+        self.cb_group.setChecked(True)
+        self.cb_group.toggled.connect(lambda _: self._render())
+        top.addWidget(self.cb_group)
         pp.body.addLayout(top)
 
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels([c[0].upper() for c in self.COLS])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setIconSize(QSize(20, 20))
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setDefaultSectionSize(30)
-        hh = self.table.horizontalHeader()
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(len(self.COLS))
+        self.tree.setHeaderLabels([c[0].upper() for c in self.COLS])
+        self.tree.setIconSize(QSize(20, 20))
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAnimated(False)
+        hh = self.tree.header()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setStretchLastSection(True)
         hh.setSortIndicatorShown(True)
         for i, (_, w) in enumerate(self.COLS):
-            self.table.setColumnWidth(i, w)
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(3, Qt.DescendingOrder)
-        self.table.setMinimumHeight(420)
-        self.table.itemSelectionChanged.connect(self._sel_changed)
-        pp.body.addWidget(self.table, 1)
+            self.tree.setColumnWidth(i, w + (40 if i == 0 else 0))
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(3, Qt.DescendingOrder)
+        self.tree.setMinimumHeight(420)
+        self.tree.itemSelectionChanged.connect(self._sel_changed)
+        self.tree.itemExpanded.connect(lambda it: self.expanded.add(it.data(0, Qt.UserRole)))
+        self.tree.itemCollapsed.connect(lambda it: self.expanded.discard(it.data(0, Qt.UserRole)))
+        self.expanded = set()       # aufgeklappte Gruppen bleiben beim Aktualisieren offen
+        pp.body.addWidget(self.tree, 1)
 
         acts = QHBoxLayout()
         acts.setSpacing(8)
@@ -4791,12 +6182,27 @@ class TaskTab(Page):
         self.t_swap = StatTile("Swap")
         self.t_sys = StatTile("System")
         self.t_sys.spark.hide()
-        for i, t in enumerate((self.t_cpu, self.t_ram, self.t_gpu, self.t_net, self.t_disk, self.t_bat,
-                               self.t_swap, self.t_sys)):
+        self.perf_tiles = {"cpu": self.t_cpu, "ram": self.t_ram, "gpu": self.t_gpu, "net": self.t_net,
+                           "disk": self.t_disk, "bat": self.t_bat, "swap": self.t_swap, "sys": self.t_sys}
+        for i, (kind, t) in enumerate(self.perf_tiles.items()):
+            t.make_clickable(lambda k=kind: self.toggle_detail(k))
             ll.addWidget(t, i // 3, i % 3)
         for c in range(3):
             ll.setColumnStretch(c, 1)
-        ll.setRowStretch(3, 1)
+        self.detail = DetailPanel(lambda: self.toggle_detail(None), self._detail_device)
+        self.detail.hide()
+        ll.addWidget(self.detail, 3, 0, 1, 3)
+        self.detail_hint = Label("Kachel anklicken, um Details zu sehen – z. B. Caches, Takt und Virtualisierung "
+                                 "beim Prozessor, Partitionen beim Datenträger, Takt und Leistung bei der Grafik.",
+                                 "Hint", wrap=True)
+        ll.addWidget(self.detail_hint, 4, 0, 1, 3)
+        ll.setRowStretch(5, 1)
+        self.detail_kind = None
+        self.detail_dev = {}      # Art → gewähltes Gerät (Laufwerk, Grafikkarte, Schnittstelle)
+        self.detail_prev = {}     # Art → (Zeit, Zähler) für Raten
+        self.detail_busy = False
+        self.last_snap = None
+        self.cpu_pct = None
         self.views.addWidget(lv)
 
         # ---------- System ----------
@@ -4810,6 +6216,13 @@ class TaskTab(Page):
         self.sys_grid.setVerticalSpacing(12)
         hw.body.addLayout(self.sys_grid)
         sl.addWidget(hw)
+        vp = Panel("Versionsstand – Treiber, Microcode, BIOS",
+                   [Button("↻", "icon", self.load_versions, "Neu prüfen")])
+        self.ver_box = QVBoxLayout()
+        self.ver_box.setSpacing(0)
+        vp.body.addLayout(self.ver_box)
+        vp.body.addWidget(Label("„Update da“ stützt sich auf die letzte Prüfung im Tab Updates.", "Hint", wrap=True))
+        sl.addWidget(vp)
         netp = Panel("Netzwerk & IP-Adressen", [Button("Öffentliche IP prüfen", "ghost", self.check_public_ip,
                                                        "Fragt am.i.mullvad.net nach deiner öffentlichen IP")])
         self.net_box = QVBoxLayout()
@@ -4827,6 +6240,44 @@ class TaskTab(Page):
         sl.addStretch(1)
         self.views.addWidget(sv)
 
+        # ---------- Autostart & Bootzeit ----------
+        av = QWidget()
+        al = QVBoxLayout(av)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(16)
+        self.add_app_cb = QComboBox()
+        self.add_app_cb.setMinimumWidth(260)
+        self.add_app_cb.setMinimumHeight(38)
+        ap = Panel("Autostart-Programme", [self.add_app_cb, Button("Hinzufügen", "ghost", self.autostart_add),
+                                           Button("↻", "icon", self.load_autostart, "Neu einlesen")])
+        ap.body.addWidget(Label("Programme, die nach der Anmeldung automatisch starten. Ausschalten ist jederzeit "
+                                "umkehrbar – für System-Einträge legt Tuxdex nur eine eigene Einstellung in "
+                                "~/.config/autostart an.", "Hint", wrap=True))
+        self.as_box = QVBoxLayout()
+        self.as_box.setSpacing(2)
+        ap.body.addLayout(self.as_box)
+        al.addWidget(ap)
+        sp = Panel("Hintergrunddienste des Benutzers (systemd --user)")
+        self.us_box = QVBoxLayout()
+        self.us_box.setSpacing(2)
+        sp.body.addLayout(self.us_box)
+        al.addWidget(sp)
+        bp = Panel("Bootzeit", [Button("↻", "icon", self.load_boot, "Neu messen")])
+        self.boot_head = Label("", "Value", wrap=True)
+        bp.body.addWidget(self.boot_head)
+        self.boot_phases = QVBoxLayout()
+        self.boot_phases.setSpacing(4)
+        bp.body.addLayout(self.boot_phases)
+        bp.body.addWidget(Label("LANGSAMSTE DIENSTE BEIM START", "FieldLabel"))
+        self.boot_blame = QVBoxLayout()
+        self.boot_blame.setSpacing(2)
+        bp.body.addLayout(self.boot_blame)
+        bp.body.addWidget(Label("Dienste starten größtenteils parallel – die Zeiten addieren sich nicht. Entscheidend "
+                                "ist vor allem „System (Dienste)“.", "Hint", wrap=True))
+        al.addWidget(bp)
+        al.addStretch(1)
+        self.views.addWidget(av)
+
         self._sel_changed()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -4839,6 +6290,158 @@ class TaskTab(Page):
         self.views.setCurrentIndex(idx)
         if idx == 2:
             self.load_system()
+        elif idx == 3:
+            self.load_autostart()
+            self.load_boot()
+
+    # ---- Autostart --------------------------------------------------------
+
+    def load_autostart(self):
+        def worker():
+            ents, svcs, apps = autostart_entries(), user_services(), installed_apps()
+            ui(lambda: self._show_autostart(ents, svcs, apps))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _as_row(self, icon, name, detail, on, toggle, remove=None):
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 4, 0, 4)
+        h.setSpacing(12)
+        ic = QLabel()
+        qi = themed_icon(icon) if icon else QIcon()
+        ic.setPixmap((qi if not qi.isNull() else letter_icon(name)).pixmap(24, 24))
+        ic.setFixedSize(24, 24)
+        h.addWidget(ic)
+        txt = QVBoxLayout()
+        txt.setSpacing(0)
+        txt.addWidget(Label(name, "PanelTitle"))
+        d = Label(detail, "Hint")
+        d.setToolTip(detail)
+        txt.addWidget(d)
+        h.addLayout(txt, 1)
+        if remove:
+            h.addWidget(Button("Entfernen", "ghost", remove))
+        sw = Switch()
+        sw.setChecked(on)
+        sw.toggled.connect(toggle)
+        h.addWidget(sw)
+        return w
+
+    def _show_autostart(self, ents, svcs, apps):
+        self._clear(self.as_box)
+        if not ents:
+            self.as_box.addWidget(Label("Keine Autostart-Programme.", "Muted"))
+        src = {"user": "eigener Eintrag", "system": "vom System", "both": "vom System · angepasst"}
+        for e in ents:
+            cmd = e["exec"].replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
+            self.as_box.addWidget(self._as_row(
+                e["icon"], e["name"], f"{src[e['source']]} · {cmd}", e["on"],
+                lambda on, e=e: self._as_toggle(e, on),
+                (lambda _=False, e=e: self._as_remove(e)) if e["source"] == "user" else None))
+        self._clear(self.us_box)
+        if not svcs:
+            self.us_box.addWidget(Label("Keine aktivierten Benutzerdienste.", "Muted"))
+        for unit, desc, active in svcs:
+            self.us_box.addWidget(self._as_row(
+                "", unit.removesuffix(".service"), f"{desc or unit} · {'läuft' if active else 'gestoppt'}", True,
+                lambda on, u=unit: self._svc_toggle(u, on)))
+        cur = {e["id"] for e in ents}
+        self.add_app_cb.clear()
+        self.add_app_cb.addItem("Programm auswählen …", None)
+        for name, path, icon in apps:
+            if os.path.basename(path) not in cur:
+                qi = themed_icon(icon) if icon else QIcon()
+                self.add_app_cb.addItem(qi if not qi.isNull() else letter_icon(name), name, path)
+
+    def _as_toggle(self, e, on):
+        try:
+            autostart_set(e, on)
+            self.app.set_status(f"{e['name']} startet {'jetzt' if on else 'nicht mehr'} automatisch.")
+        except OSError as err:
+            show_error(self, "Autostart", f"Konnte nicht speichern: {err}")
+        self.load_autostart()
+
+    def _as_remove(self, e):
+        if ask_confirm(self, "Autostart", f"{e['name']} aus dem Autostart entfernen?", "Entfernen"):
+            try:
+                os.remove(e["path"])
+            except OSError:
+                pass
+            self.load_autostart()
+
+    def autostart_add(self):
+        path = self.add_app_cb.currentData()
+        if not path:
+            return
+        try:
+            autostart_add(path)
+            self.app.set_status(f"{self.add_app_cb.currentText()} startet jetzt automatisch.")
+        except OSError as err:
+            show_error(self, "Autostart", f"Konnte nicht speichern: {err}")
+        self.load_autostart()
+
+    def _svc_toggle(self, unit, on):
+        if not on and not ask_confirm(self, "Dienst", f"{unit} nicht mehr automatisch starten und jetzt stoppen?",
+                                      "Deaktivieren"):
+            self.load_autostart()
+            return
+        run_capture_async(["systemctl", "--user", "enable" if on else "disable", "--now", unit],
+                          lambda rc, o, e: (self.app.set_status(
+                              f"{unit} {'aktiviert' if on else 'deaktiviert'}." if rc == 0
+                              else f"Fehler: {e.strip()}"), self.load_autostart()))
+
+    # ---- Bootzeit ---------------------------------------------------------
+
+    def load_boot(self):
+        self.boot_head.setText("Wird gemessen …")
+
+        def worker():
+            b = boot_times()
+            ui(lambda: self._show_boot(b))
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _fmt_s(sec):
+        return f"{sec / 60:.0f} min {sec % 60:.0f} s" if sec >= 60 else f"{sec:.1f} s"
+
+    def _show_boot(self, b):
+        self._clear(self.boot_phases)
+        self._clear(self.boot_blame)
+        if not b:
+            self.boot_head.setText("systemd-analyze ist nicht verfügbar.")
+            return
+        if b.get("error"):
+            self.boot_head.setText(b["error"])
+            return
+        tone = "schnell" if b["total"] < 20 else ("normal" if b["total"] < 45 else "langsam")
+        self.boot_head.setText(f"Letzter Start: {self._fmt_s(b['total'])} ({tone})"
+                               + (f" · Anmeldebildschirm nach {self._fmt_s(b['target'])} Systemzeit"
+                                  if b.get("target") else ""))
+        top = max([s for _, s in b["phases"]] + [0.001])
+        for name, sec in b["phases"]:
+            self.boot_phases.addWidget(TimeBar(name, self._fmt_s(sec), sec / top))
+        topb = b["blame"][0][0] if b["blame"] else 1
+        for sec, unit in b["blame"]:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            bar = TimeBar(unit, self._fmt_s(sec), sec / topb, warn=unit in SLOW_HINTS)
+            row.addWidget(bar, 1)
+            hint = SLOW_HINTS.get(unit)
+            if hint:
+                bar.setToolTip(hint)
+                row.addWidget(Button("Deaktivieren", "ghost", lambda _=False, u=unit: self._disable_unit(u), hint))
+            self.boot_blame.addLayout(row)
+
+    def _disable_unit(self, unit):
+        if not ask_confirm(self, "Dienst deaktivieren", f"{unit} beim Start nicht mehr ausführen?\n\n"
+                           f"{SLOW_HINTS.get(unit, '')}\nRückgängig: sudo systemctl enable {unit}", "Deaktivieren"):
+            return
+        if not self.app.priv.ensure(self):
+            return
+        run_capture_async(["systemctl", "disable", unit],
+                          lambda rc, o, e: self.app.set_status(f"{unit} deaktiviert – wirkt beim nächsten Start."
+                                                               if rc == 0 else f"Fehler: {e.strip()}"),
+                          needs_sudo=True)
 
     def toggle_pause(self):
         if self.timer.isActive():
@@ -4896,6 +6499,7 @@ class TaskTab(Page):
             pio = self.prev_io.get(pid)
             p["io_rate"] = (p["io"] - pio) / secs if (p["io"] is not None and pio is not None) else \
                 (None if p["io"] is None else 0)
+        self.cpu_pct = cpu_pct
         self.prev_total = (s["total"], s["idle"], s["t"])
         self.prev_ticks = {pid: p["ticks"] for pid, p in procs.items()}
         self.prev_io = {pid: p["io"] for pid, p in procs.items() if p["io"] is not None}
@@ -4986,6 +6590,292 @@ class TaskTab(Page):
                        + (f"{d} T " if d else "") + f"{h} Std {rem // 60} Min")
         if self.views.currentIndex() == 0:
             self._render()
+        self.last_snap = s
+        if self.detail_kind and self.views.currentIndex() == 1:
+            self.refresh_detail()
+
+    # ---- Detail-Ansicht (Kachel angeklickt) --------------------------------
+
+    DETAIL_TITLES = {"cpu": "Prozessor", "ram": "Arbeitsspeicher", "gpu": "Grafik", "net": "Netzwerk",
+                     "disk": "Datenträger", "bat": "Akku", "swap": "Swap", "sys": "System & Lüfter"}
+
+    def toggle_detail(self, kind):
+        if kind == self.detail_kind:
+            kind = None
+        self.detail_kind = kind
+        for k, t in self.perf_tiles.items():
+            t.set_selected(k == kind)
+        self.detail_hint.setVisible(not kind)
+        if not kind:
+            self.detail.hide()
+            return
+        self.detail.loading(self.DETAIL_TITLES[kind])
+        self.detail.show()
+        self.refresh_detail()
+        page = self.detail.parent()
+        while page and not isinstance(page, QScrollArea):
+            page = page.parent()
+        if page:
+            QTimer.singleShot(50, lambda: page.ensureWidgetVisible(self.detail, 0, 24))
+
+    def _detail_device(self, key):
+        if self.detail_kind and key is not None:
+            self.detail_dev[self.detail_kind] = key
+            self.detail_prev.pop(self.detail_kind, None)
+            self.detail.loading(self.DETAIL_TITLES[self.detail_kind])
+            self.refresh_detail()
+
+    def refresh_detail(self):
+        kind, s = self.detail_kind, self.last_snap
+        if not kind or not s or self.detail_busy:
+            return
+        self.detail_busy = True
+        dev = self.detail_dev.get(kind)
+        procs = s["procs"]
+        extra = {"threads": sum(p.get("threads", 0) for p in procs.values()), "n_procs": len(procs),
+                 "n_apps": sum(1 for p in procs.values() if p.get("app")), "cpu_pct": self.cpu_pct}
+
+        def worker():
+            try:
+                res = getattr(self, f"_detail_{kind}")(s, dev, extra)
+            except Exception as e:
+                res = (self.DETAIL_TITLES[kind], [], [("Fehler", str(e))], [], "", "", None)
+            ui(lambda: self._show_detail(kind, res))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_detail(self, kind, res):
+        self.detail_busy = False
+        if kind != self.detail_kind:
+            return
+        title, stats, kv, bars, bar_title, hint, devices = res
+        if devices:
+            items, cur = devices
+            self.detail_dev[kind] = cur
+            self.detail.set_devices(items, cur)
+        else:
+            self.detail.set_devices([], None)
+        self.detail.show_data(title, stats, kv, bars, bar_title, hint)
+
+    def _rate(self, kind, key, counters):
+        """Raten pro Sekunde aus Zählern (Tupel) seit dem letzten Aufruf – None beim ersten Mal."""
+        now = time.time()
+        prev = self.detail_prev.get(kind)
+        self.detail_prev[kind] = (key, now, counters)
+        if not prev or prev[0] != key or now - prev[1] <= 0.2:
+            return None, 0
+        dt = now - prev[1]
+        return tuple(max(0, a - b) for a, b in zip(counters, prev[2])), dt
+
+    def _detail_cpu(self, s, dev, x):
+        st, live = cpu_static(), cpu_live()
+        avg, _ = s["mhz"]
+        temp = s["temps"].get("cpu")
+        stats = [("Auslastung", f"{x['cpu_pct']:.0f} %" if x["cpu_pct"] is not None else "—"),
+                 ("Geschwindigkeit", f"{avg / 1000:.2f} GHz" if avg else "—"),
+                 ("Temperatur", f"{temp:.0f} °C" if temp is not None else "—"),
+                 ("Betriebszeit", fmt_uptime(s["up"])),
+                 ("Prozesse", x["n_procs"]), ("Threads", x["threads"]),
+                 ("Handles", live["handles"] if live["handles"] is not None else "—"),
+                 ("Last 1 / 5 / 15 Min", " / ".join(s["load"]))]
+        c = st["caches"]
+        kv = [("Modell", st["model"]),
+              ("Basisgeschwindigkeit", fmt_ghz(st["base"])),
+              ("Max. Geschwindigkeit", fmt_ghz(st["max"])),
+              ("Sockets", st["sockets"]), ("Kerne", st["cores"]), ("Virtuelle Prozessoren", st["threads"]),
+              ("Virtualisierung", st["virt"]), ("Virtuelle Maschine", st["vm"]),
+              ("L1-Cache", fmt_bytes(c.get("L1")) if c.get("L1") else "—"),
+              ("L2-Cache", fmt_bytes(c.get("L2")) if c.get("L2") else "—"),
+              ("L3-Cache", fmt_bytes(c.get("L3")) if c.get("L3") else "—"),
+              ("CPUfreq-Treiber", st["driver"]), ("CPUfreq-Regler", live["governor"]),
+              ("Energiemodus", live["epp"]), ("Turbo / Boost", live["boost"])]
+        return (f"Prozessor · {st['model']}", stats, kv, [], "",
+                "Handles = geöffnete Dateien und Verbindungen im ganzen System. Die Last zeigt, wie viele Prozesse "
+                "im Schnitt auf Rechenzeit warten – mehr als die Zahl der Threads heißt Überlastung.", None)
+
+    def _detail_ram(self, s, dev, x):
+        m = s["mem"]
+        total, avail = m.get("MemTotal", 0), m.get("MemAvailable", 0)
+        cache = m.get("Cached", 0) + m.get("Buffers", 0) + m.get("SReclaimable", 0)
+        swt, swf = m.get("SwapTotal", 0), m.get("SwapFree", 0)
+        z = zram_stats()
+        hw = memory_hw()
+        stats = [("In Verwendung", fmt_bytes(total - avail)), ("Verfügbar", fmt_bytes(avail)),
+                 ("Zugesichert", f"{fmt_bytes(m.get('Committed_AS'))} / {fmt_bytes(m.get('CommitLimit'))}"),
+                 ("Im Cache", fmt_bytes(cache)),
+                 ("Verwendeter Swap", fmt_bytes(swt - swf)), ("Verfügbarer Swap", fmt_bytes(swf))]
+        if z:
+            stats += [("Komprimiert (zram)", fmt_bytes(z[1])), ("Ersparnis", fmt_bytes(max(0, z[0] - z[1])))]
+        kv = [("Gesamt", fmt_bytes(total)),
+              ("Geschwindigkeit", hw.get("speed", "—")), ("Steckplätze verwendet", hw.get("slots", "—")),
+              ("Formfaktor", hw.get("form", "—")), ("Typ", hw.get("type", "—")),
+              ("Hersteller", hw.get("vendor", "—")),
+              ("Gemeinsam genutzt", fmt_bytes(m.get("Shmem"))), ("Kernel (Slab)", fmt_bytes(m.get("Slab"))),
+              ("Noch zu schreiben", fmt_bytes(m.get("Dirty")))]
+        return ("Arbeitsspeicher", stats, kv, [("Belegt", total - avail, total)], "Belegung",
+                "„Im Cache“ ist Speicher für zuletzt gelesene Dateien – er wird sofort freigegeben, wenn Programme "
+                "ihn brauchen. „Zugesichert“ ist, was Programme angefordert haben (auch ungenutzt)."
+                + ("" if hw else " Takt und Steckplätze meldet dieses System nicht (udev-DMI-Daten fehlen)."), None)
+
+    def _detail_disk(self, s, dev, x):
+        stats_all = diskstats()
+        if not stats_all:
+            return ("Datenträger", [], [("Hinweis", "keine Laufwerke gefunden")], [], "", "", None)
+        names = sorted(stats_all, key=lambda n: (not n.startswith("nvme"), n))
+        if dev not in stats_all:
+            dev = next((n for n in names if disk_static(n)["system"]), names[0])
+        st = disk_static(dev)
+        rd, wr, io_ms, ios, wait_ms = stats_all[dev]
+        d, dt = self._rate("disk", dev, (rd, wr, io_ms, ios, wait_ms))
+        temp = None
+        for base in (f"/sys/block/{dev}/device", f"/sys/block/{dev}/device/device"):
+            hw = _hwmon_dir(base)
+            if hw and _first_line(f"{hw}/temp1_input").isdigit():
+                temp = int(_first_line(f"{hw}/temp1_input")) / 1000
+                break
+        stats = [("Lesegeschwindigkeit", f"{fmt_bytes(d[0] / dt)}/s" if d else "…"),
+                 ("Schreibgeschwindigkeit", f"{fmt_bytes(d[1] / dt)}/s" if d else "…"),
+                 ("Aktive Zeit", f"{min(100, d[2] / (dt * 10)):.0f} %" if d else "…"),
+                 ("Ø Antwortzeit", (f"{d[4] / d[3]:.2f} ms" if d[3] else "0 ms") if d else "…"),
+                 ("Insgesamt gelesen", fmt_bytes(rd)), ("Insgesamt geschrieben", fmt_bytes(wr))]
+        if temp is not None:
+            stats.append(("Temperatur", f"{temp:.0f} °C"))
+        kv = [("Modell", st["model"]), ("Kapazität", fmt_bytes(st["size"])),
+              ("Formatiert", fmt_bytes(st["formatted"]) if st["formatted"] else "—"),
+              ("Systemdatenträger", "Ja" if st["system"] else "Nein"), ("Typ", st["type"]),
+              ("WWN", st["wwn"]), ("Seriennummer", st["serial"])]
+        bars = [(f"{p['path']} · {p['fs'] or '—'}" + (f" · {short_path(p['mount'])}" if p["mount"] else ""),
+                 int(p["used"]), int(p["fssize"]))
+                for p in st["parts"] if str(p.get("fssize") or "").isdigit() and str(p.get("used") or "").isdigit()]
+        items = [(n + (f" · {disk_static(n)['model']}" if disk_static(n)["model"] != "—" else ""), n) for n in names]
+        return (f"Datenträger · {dev}", stats, kv, bars, "Partitionen (eingehängt)",
+                "Aktive Zeit = Anteil der Zeit, in der das Laufwerk beschäftigt war. Werte seit dem Systemstart.",
+                (items, dev))
+
+    def _detail_gpu(self, s, dev, x):
+        gl = s.get("gpus") or []
+        if not gl:
+            return ("Grafik", [], [("Hinweis", "keine Grafikkarte erkannt")], [], "", "", None)
+        cards = [g.get("card") for g in gl]
+        if dev not in cards:
+            dev = next((g["card"] for g in gl if g.get("busy") is not None), cards[0])
+        g = gl[cards.index(dev)]
+        nvs = [gg for gg in gl if gg.get("name", "").startswith("NVIDIA")]
+        st, lv = gpu_static(dev), gpu_live(g, nvs.index(g) if g in nvs else 0)
+        temp = lv.get("temp", s["temps"].get("gpu") if len(gl) == 1 else None)
+
+        def clk(a, b):
+            if not a:
+                return "—"
+            return f"{a / 1000:.2f} GHz" + (f" / {b / 1000:.2f} GHz" if b else "")
+        stats = [("Auslastung", f"{g['busy']} %" if g.get("busy") is not None else "—"),
+                 ("Taktgeschwindigkeit", clk(lv.get("clk"), lv.get("clk_max"))),
+                 ("Leistungsaufnahme", (f"{lv['power']:.1f} W" + (f" / {lv['power_cap']:.0f} W"
+                                                                   if lv.get("power_cap") else ""))
+                  if lv.get("power") is not None else "—"),
+                 ("Speicherverbrauch", f"{fmt_bytes(g['vram_used'])} / {fmt_bytes(g['vram_total'])}"
+                  if g.get("vram_total") else "—"),
+                 ("Speichertakt", clk(lv.get("mclk"), lv.get("mclk_max"))),
+                 ("Temperatur", f"{temp:.0f} °C" if temp is not None else "—")]
+        if lv.get("enc") is not None:
+            stats += [("Video kodieren", f"{lv['enc']:.0f} %"), ("Video dekodieren", f"{lv['dec']:.0f} %")]
+        if lv.get("fan"):
+            stats.append(("Lüfter", lv["fan"]))
+        kv = [("Modell", g.get("name", "—")),
+              ("Treiber", st["driver"] + (f" {lv['nv_driver']}" if lv.get("nv_driver") else "")),
+              ("OpenGL-Version", st["gl"]), ("Vulkan-Version", st["vk"]),
+              ("PCI-Express-Geschwindigkeit", lv.get("nv_link") or st["link"] or "—"),
+              ("Max. PCI-Express-Geschwindigkeit", lv.get("nv_link_max") or st["link_max"] or "—"),
+              ("PCI-Busadresse", st["bus"] if st["bus"] != "—" else lv.get("nv_bus", "—"))]
+        items = [(gg.get("name", gg.get("card")), gg.get("card")) for gg in gl]
+        hint = "" if (st["gl"] != "—" or st["vk"] != "—") else \
+            "OpenGL- und Vulkan-Version zeigt Tuxdex, wenn mesa-utils (glxinfo) bzw. vulkan-tools installiert sind."
+        return (f"Grafik · {g.get('name', dev)}", stats, kv, [], "", hint, (items, dev))
+
+    def _detail_net(self, s, dev, x):
+        net = {k: v for k, v in s["net"].items() if k != "lo"}
+        if not net:
+            return ("Netzwerk", [], [("Hinweis", "keine Netzwerkschnittstelle gefunden")], [], "", "", None)
+        names = sorted(net, key=lambda n: (_first_line(f"/sys/class/net/{n}/operstate") != "up",
+                                           iface_kind(n) in ("Virtuell",), n))
+        if dev not in net:
+            dev = internet_route_dev() if internet_route_dev() in net else names[0]
+        rx, tx = net[dev]
+        d, dt = self._rate("net", dev, (rx, tx))
+        st = net_static(dev)
+        addrs = self.detail_prev.get(("addr", dev))
+        if not addrs or time.time() - addrs[0] > 30:
+            try:
+                data = json.loads(_cmd_out(["ip", "-j", "addr", "show", "dev", dev]) or "[]")
+                info = data[0].get("addr_info", []) if data else []
+            except Exception:
+                info = []
+            addrs = (time.time(), [f"{a['local']}/{a.get('prefixlen', '')}" for a in info if a.get("family") == "inet"],
+                     [a["local"] for a in info if a.get("family") == "inet6"])
+            self.detail_prev[("addr", dev)] = addrs
+        stats = [("Empfangen", f"{fmt_bytes(d[0] / dt)}/s" if d else "…"),
+                 ("Senden", f"{fmt_bytes(d[1] / dt)}/s" if d else "…"),
+                 ("Insgesamt empfangen", fmt_bytes(rx)), ("Insgesamt gesendet", fmt_bytes(tx))]
+        kv = [("Typ", iface_kind(dev)), ("Status", _first_line(f"/sys/class/net/{dev}/operstate") or "—"),
+              ("Verbindungsgeschwindigkeit", st["speed"]), ("Treiber", st["driver"]),
+              ("MAC-Adresse", st["mac"]), ("MTU", st["mtu"]),
+              ("IPv4", ", ".join(addrs[1]) or "—"), ("IPv6", "\n".join(addrs[2]) or "—")]
+        items = [(f"{n} · {iface_kind(n)}", n) for n in names]
+        return (f"Netzwerk · {dev}", stats, kv, [], "", "Summen seit dem Systemstart.", (items, dev))
+
+    def _detail_bat(self, s, dev, x):
+        bats, ac = s["bat"]
+        if not bats:
+            return ("Akku", [], [("Stromversorgung", "kein Akku – Netzbetrieb")], [], "", "", None)
+        b = bats[0]
+        e = battery_extra(b["name"])
+        rest = "—"
+        if b["hours"]:
+            rest = f"{int(b['hours'])}:{int((b['hours'] % 1) * 60):02d} h"
+        stats = [("Ladestand", f"{b['capacity']} %" if b["capacity"] is not None else "—"),
+                 ("Status", BAT_STATUS.get(b["status"], b["status"])),
+                 ("Leistung", f"{b['watts']:.1f} W" if b["watts"] is not None else "—"),
+                 ("Noch" if b["status"] == "Discharging" else "Voll in", rest),
+                 ("Zustand", f"{b['health']:.0f} %" if b["health"] else "—"),
+                 ("Ladezyklen", e["cycles"] if e["cycles"] is not None else "—")]
+        kv = [("Modell", b["model"] or "—"), ("Technologie", e["tech"]),
+              ("Spannung", f"{e['volt']:.2f} V" if e["volt"] else "—"),
+              ("Kapazität jetzt", f"{e['full']:.1f} Wh" if e["full"] else "—"),
+              ("Kapazität neu", f"{e['design']:.1f} Wh" if e["design"] else "—"),
+              ("Ladegrenze", f"{e['limit']} %" if e["limit"] else "keine"),
+              ("Netzteil", "angeschlossen" if ac else "nicht angeschlossen" if ac is False else "—")]
+        return ("Akku", stats, kv, [], "",
+                "Zustand = heutige volle Kapazität im Vergleich zum Neuzustand.", None)
+
+    def _detail_swap(self, s, dev, x):
+        m = s["mem"]
+        swt, swf = m.get("SwapTotal", 0), m.get("SwapFree", 0)
+        z = zram_stats()
+        devs = swap_devices()
+        stats = [("Belegt", fmt_bytes(swt - swf)), ("Gesamt", fmt_bytes(swt)),
+                 ("Swappiness", _first_line("/proc/sys/vm/swappiness") or "—")]
+        if z:
+            stats += [("Komprimiert (zram)", fmt_bytes(z[1])), ("Ersparnis", fmt_bytes(max(0, z[0] - z[1])))]
+        kv = [(short_path(p), f"{'zram' if 'zram' in p else typ} · Priorität {prio}") for p, typ, _, _, prio in devs] \
+            or [("Swap", "nicht aktiv")]
+        bars = [(short_path(p), used, size) for p, _, size, used, _ in devs]
+        return ("Swap", stats, kv, bars, "Belegung je Gerät",
+                "Swappiness (0–200): je höher, desto früher lagert Linux ungenutzten Speicher aus.", None)
+
+    def _detail_sys(self, s, dev, x):
+        live = cpu_live()
+        boot = datetime.fromtimestamp(time.time() - s["up"]).strftime("%d.%m.%Y %H:%M")
+        stats = [("Prozesse", x["n_procs"]), ("davon Programme", x["n_apps"]), ("Threads", x["threads"]),
+                 ("Handles", live["handles"] if live["handles"] is not None else "—"),
+                 ("Betriebszeit", fmt_uptime(s["up"])), ("Last 1 / 5 / 15 Min", " / ".join(s["load"]))]
+        kv = [("Kernel", os.uname().release), ("Gestartet am", boot)]
+        fl = fans()
+        kv += [(f"Lüfter · {name}", f"{rpm} U/min  ({chip})") for name, chip, rpm in fl] or \
+            [("Lüfter", "keine Drehzahl gemeldet")]
+        for k, v in sorted(s["temps"].items()):
+            kv.append((f"Temperatur · {k.upper()}", f"{v:.0f} °C"))
+        return ("System & Lüfter", stats, kv, [], "",
+                "" if fl else "Lüfterdrehzahlen erscheinen, wenn der Treiber sie meldet (bei vielen Laptops nur mit "
+                "passendem Modul, z. B. thinkpad_acpi, dell-smm-hwmon, asus-wmi oder nct6775).", None)
 
     # ---- Tabelle ----------------------------------------------------------
 
@@ -5006,78 +6896,155 @@ class TaskTab(Page):
                 continue
             rows.append((pid, p))
 
-        sel_pid = self._selected_pid()
-        vbar = self.table.verticalScrollBar().value()
-        sort_col = self.table.horizontalHeader().sortIndicatorSection()
-        sort_ord = self.table.horizontalHeader().sortIndicatorOrder()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
+        # Gruppen: Programme nach Name, Hintergrundprozesse nach Prozessname (kworker/0:1 → kworker)
+        groups = {}
+        for pid, p in rows:
+            if self.cb_group.isChecked():
+                key = "app:" + p["app"][1] if p.get("app") else "proc:" + p["name"].split("/")[0]
+            else:
+                key = f"pid:{pid}"
+            groups.setdefault(key, []).append((pid, p))
+
+        sel = self._selected_key()
+        vbar = self.tree.verticalScrollBar().value()
+        sort_col = self.tree.header().sortIndicatorSection()
+        sort_ord = self.tree.header().sortIndicatorOrder()
+        self.tree.blockSignals(True)
+        self.tree.setSortingEnabled(False)
+        self.tree.clear()
         mono = QFont(FONTS["mono"], 10)
         hot = QColor(COLORS["warn"])
-        for r, (pid, p) in enumerate(rows):
-            app = p.get("app")
-            label = app[1] if app else p["name"]
-            name_it = QTableWidgetItem(label)
-            if app:
-                ic = themed_icon(app[0])
-                name_it.setIcon(ic if not ic.isNull() else letter_icon(label))
-            elif not p["cmd"].startswith("["):
-                name_it.setIcon(letter_icon(p["name"]))
-            else:
-                name_it.setIcon(QIcon())
-            iorate = p.get("io_rate")
-            cells = [
-                name_it,
-                NumItem(str(pid), pid),
-                QTableWidgetItem(p["user"]),
-                NumItem(f"{p['cpu']:.1f} %", p["cpu"]),
-                NumItem(fmt_bytes(p["rss"]), p["rss"]),
-                NumItem("—" if iorate is None else (f"{fmt_bytes(iorate)}/s" if iorate else "0"),
-                        -1 if iorate is None else iorate),
-                NumItem(energy_label(p["cpu"]), p["cpu"]),
-                QTableWidgetItem(STATES.get(p["state"], p["state"])),
-                QTableWidgetItem(p["cmd"]),
-            ]
-            for c, it in enumerate(cells):
-                if c in (1, 3, 4, 5, 8):
-                    it.setFont(mono)
-                if c in (1, 3, 4, 5):
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if c in (3, 6) and p["cpu"] >= 50:
-                    it.setForeground(hot)
-                it.setToolTip(f"{label} · PID {pid}\n{p['cmd']}")
-                self.table.setItem(r, c, it)
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(sort_col, sort_ord)
-        if sel_pid is not None:
-            for r in range(self.table.rowCount()):
-                it = self.table.item(r, 1)
-                if it and it.data(Qt.UserRole) == sel_pid:
-                    self.table.selectRow(r)
-                    break
-        self.table.verticalScrollBar().setValue(vbar)
+        sel_item = None
+        for key, members in groups.items():
+            if len(members) == 1:
+                it = self._proc_item(*members[0], mono, hot)
+                self.tree.addTopLevelItem(it)
+                if sel in (key, f"pid:{members[0][0]}"):
+                    sel_item = it
+                continue
+            members.sort(key=lambda m: m[1]["rss"], reverse=True)
+            first = members[0][1]
+            app = first.get("app")
+            label = app[1] if app else first["name"].split("/")[0]
+            cpu = sum(p["cpu"] for _, p in members)
+            rss = sum(p["rss"] for _, p in members)
+            ios = [p.get("io_rate") for _, p in members if p.get("io_rate") is not None]
+            io = sum(ios) if ios else None
+            users = sorted({p["user"] for _, p in members})
+            g = _SortItem([f"{label}  ({len(members)})", "", ", ".join(users),
+                           f"{cpu:.1f} %", fmt_bytes(rss),
+                           "—" if io is None else (f"{fmt_bytes(io)}/s" if io else "0"),
+                           energy_label(cpu), f"{len(members)} Prozesse", first["cmd"]],
+                          [label.lower(), len(members), ", ".join(users), cpu, rss, -1 if io is None else io,
+                           cpu, "", first["cmd"]])
+            g.setData(0, Qt.UserRole, key)
+            self._style_item(g, label, app, first, mono, hot, cpu)
+            f = g.font(0)
+            f.setWeight(QFont.DemiBold)
+            g.setFont(0, f)
+            for pid, p in members:
+                ch = self._proc_item(pid, p, mono, hot, in_group=True)
+                g.addChild(ch)
+                if sel == f"pid:{pid}":
+                    sel_item = ch
+            self.tree.addTopLevelItem(g)
+            if key in self.expanded:
+                g.setExpanded(True)
+            if sel == key:
+                sel_item = g
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(sort_col, sort_ord)
+        if sel_item is not None:
+            self.tree.setCurrentItem(sel_item)
+        self.tree.blockSignals(False)
+        self.tree.verticalScrollBar().setValue(vbar)
+        self._sel_changed()
+
+    def _style_item(self, it, label, app, p, mono, hot, cpu):
+        if app:
+            ic = themed_icon(app[0])
+            it.setIcon(0, ic if not ic.isNull() else letter_icon(label))
+        elif not p["cmd"].startswith("["):
+            it.setIcon(0, letter_icon(p["name"]))
+        for c in range(len(self.COLS)):
+            if c in (1, 3, 4, 5, 8):
+                it.setFont(c, mono)
+            if c in (1, 3, 4, 5):
+                it.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+            if c in (3, 6) and cpu >= 50:
+                it.setForeground(c, hot)
+
+    def _proc_item(self, pid, p, mono, hot, in_group=False):
+        app = p.get("app")
+        label = p["name"] if in_group or not app else app[1]     # im Ordner: echter Prozessname
+        iorate = p.get("io_rate")
+        it = _SortItem([label, str(pid), p["user"], f"{p['cpu']:.1f} %", fmt_bytes(p["rss"]),
+                        "—" if iorate is None else (f"{fmt_bytes(iorate)}/s" if iorate else "0"),
+                        energy_label(p["cpu"]), STATES.get(p["state"], p["state"]), p["cmd"]],
+                       [label.lower(), pid, p["user"], p["cpu"], p["rss"], -1 if iorate is None else iorate,
+                        p["cpu"], p["state"], p["cmd"]])
+        it.setData(0, Qt.UserRole, f"pid:{pid}")
+        self._style_item(it, label, app, p, mono, hot, p["cpu"])
+        tip = f"{label} · PID {pid}\n{p['cmd']}"
+        for c in range(len(self.COLS)):
+            it.setToolTip(c, tip)
+        return it
+
+    def _selected_key(self):
+        it = self.tree.currentItem()
+        return it.data(0, Qt.UserRole) if it and it.isSelected() else None
+
+    def _selected_pids(self):
+        """(anzeigename, [pids]) der Auswahl – bei einer Gruppe alle Prozesse darin."""
+        it = self.tree.currentItem()
+        if not it or not it.isSelected():
+            return None, []
+        key = it.data(0, Qt.UserRole) or ""
+        if key.startswith("pid:"):
+            pid = int(key[4:])
+            p = self.data.get(pid)
+            return ((p["app"][1] if p.get("app") else p["name"]) if p else "?"), [pid]
+        pids = [int(it.child(i).data(0, Qt.UserRole)[4:]) for i in range(it.childCount())]
+        return it.text(0).rsplit("  (", 1)[0], [pid for pid in pids if pid in self.data]
 
     def _selected_pid(self):
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        it = self.table.item(rows[0].row(), 1)
-        return it.data(Qt.UserRole) if it else None
+        _, pids = self._selected_pids()
+        return pids[0] if len(pids) == 1 else None
 
     def _sel_changed(self):
-        pid = self._selected_pid()
-        p = self.data.get(pid) if pid is not None else None
+        name, pids = self._selected_pids()
+        ok = bool(pids) and all(pid > 1 for pid in pids)
         for b in (self.b_nice_down, self.b_nice_up, self.b_term, self.b_kill):
-            b.setEnabled(p is not None and pid > 1)
-        if p:
-            nm = p["app"][1] if p.get("app") else p["name"]
-            self.sel_label.setText(f"{nm} · PID {pid} · {p['user']} · nice {p['nice']}")
+            b.setEnabled(ok)
+        self.b_term.setText("Alle beenden" if len(pids) > 1 else "Beenden")
+        self.b_kill.setText("Alle erzwingen" if len(pids) > 1 else "Erzwingen")
+        if len(pids) > 1:
+            rss = sum(self.data[p]["rss"] for p in pids)
+            self.sel_label.setText(f"{name} · {len(pids)} Prozesse · {fmt_bytes(rss)}")
+        elif pids:
+            p = self.data[pids[0]]
+            self.sel_label.setText(f"{name} · PID {pids[0]} · {p['user']} · nice {p['nice']}")
         else:
             self.sel_label.setText("Kein Prozess ausgewählt")
 
     # ---- System-Ansicht ---------------------------------------------------
 
+    def load_versions(self):
+        def worker():
+            v = version_status()
+            ui(lambda: self._show_versions(v))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_versions(self, rows):
+        self._clear(self.ver_box)
+        for title, tone, short, detail in rows:
+            r = CheckRow(title)
+            r.set(tone, short, detail)
+            self.ver_box.addWidget(r)
+
     def load_system(self):
+        self.load_versions()
+
         def worker():
             info = system_summary()
             ifaces, gw, dns = net_interfaces()
@@ -5152,51 +7119,55 @@ class TaskTab(Page):
         return p["uid"] != os.getuid()
 
     def kill(self, sig):
-        pid = self._selected_pid()
-        p = self.data.get(pid)
-        if not p:
+        nm, pids = self._selected_pids()
+        procs = [(pid, self.data[pid]) for pid in pids if pid in self.data]
+        if not procs:
             return
-        nm = p["app"][1] if p.get("app") else p["name"]
         hard = sig == signal.SIGKILL
+        root = [pid for pid, p in procs if self._as_root(p)]
+        what = f"{nm} (PID {procs[0][0]})" if len(procs) == 1 else f"{nm} – alle {len(procs)} Prozesse"
         if not ask_confirm(self, "Prozess erzwingen" if hard else "Prozess beenden",
-                           f"{nm} (PID {pid}) {'sofort stoppen' if hard else 'beenden'}?"
+                           f"{what} {'sofort stoppen' if hard else 'beenden'}?"
                            + ("\n\nUngespeicherte Daten gehen verloren." if hard else "")
-                           + ("\n\nDer Prozess gehört „" + p["user"] + "“ – dafür sind root-Rechte nötig."
-                              if self._as_root(p) else ""),
+                           + ("\n\nEinige gehören anderen Benutzern – dafür sind root-Rechte nötig." if root else ""),
                            "Erzwingen" if hard else "Beenden", danger=hard):
             return
-        if not self._as_root(p):
+        gone = 0
+        for pid, p in procs:
+            if pid in root:
+                continue
             try:
                 os.kill(pid, sig)
-                self.app.set_status(f"Signal an {nm} (PID {pid}) gesendet.")
+                gone += 1
             except ProcessLookupError:
-                self.app.set_status("Prozess existiert nicht mehr.")
+                pass
             except PermissionError:
-                show_error(self, "Keine Berechtigung", "Der Prozess darf nicht beendet werden.")
-            QTimer.singleShot(300, self.tick)
+                root.append(pid)
+        if root:
+            if not self.app.priv.ensure(self):
+                return
+            run_capture_async(["kill", f"-{int(sig)}"] + [str(x) for x in root],
+                              lambda rc, o, e: (self.app.set_status(
+                                  f"{nm}: " + ("beendet." if rc == 0 else f"Fehler: {e.strip()}")), self.tick()),
+                              needs_sudo=True)
             return
-        if not self.app.priv.ensure(self):
-            return
-        run_capture_async(["kill", f"-{int(sig)}", str(pid)],
-                          lambda rc, o, e: (self.app.set_status(
-                              f"{nm} (PID {pid}) " + ("beendet." if rc == 0 else f"– Fehler: {e.strip()}")),
-                              self.tick()), needs_sudo=True)
+        self.app.set_status(f"Signal an {nm} gesendet" + (f" ({gone} Prozesse)." if gone > 1 else "."))
+        QTimer.singleShot(300, self.tick)
 
     def renice(self, delta):
-        pid = self._selected_pid()
-        p = self.data.get(pid)
-        if not p:
+        nm, pids = self._selected_pids()
+        procs = [(pid, self.data[pid]) for pid in pids if pid in self.data]
+        if not procs:
             return
-        new = max(-20, min(19, p["nice"] + delta))
-        needs_root = delta < 0 or self._as_root(p)
+        needs_root = delta < 0 or any(self._as_root(p) for _, p in procs)
         if needs_root and not self.app.priv.ensure(self):
             return
-        run_capture_async(["renice", "-n", str(new), "-p", str(pid)],
+        cmds = [f"renice -n {max(-20, min(19, p['nice'] + delta))} -p {pid}" for pid, p in procs]
+        run_capture_async(["sh", "-c", " ; ".join(cmds)],
                           lambda rc, o, e: (self.app.set_status(
-                              f"Priorität jetzt nice {new}." if rc == 0
+                              f"Priorität von {nm} geändert." if rc == 0
                               else f"renice fehlgeschlagen: {e.strip()}"), self.tick()),
                           needs_sudo=needs_root)
-
 
 # --------------------------------------------------------------------------
 # Modul: Antivirus (ClamAV)
@@ -5629,7 +7600,7 @@ class AntivirusTab(Page):
         self.scan_started = time.time()
         self.sc = {"files": 0, "bytes": 0, "total_files": None, "total_bytes": None, "counting": True,
                    "last_line": time.time(), "last_file": "", "warnings": 0, "proc": None, "count_proc": None,
-                   "cancelled": False, "done": False}
+                   "cancelled": False, "done": False, "first_at": None}
         self.b_scan.hide()
         self.b_stop.show()
         self.scan_box.show()
@@ -5652,7 +7623,7 @@ class AntivirusTab(Page):
         cmd = sudo + ["find", path] + expr + ["-type", "f", "-printf", "%s\n"]
         n = size = 0
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            proc = track(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
             sc["count_proc"] = proc
             for line in proc.stdout:
                 n += 1
@@ -5673,8 +7644,8 @@ class AntivirusTab(Page):
     def _scan_worker(self, cmd):
         sc = self.sc
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                    errors="replace", bufsize=1)
+            proc = track(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    errors="replace", bufsize=1))
         except Exception as e:
             ui(lambda m=str(e): (self.log.append_text(f"error: {m}\n"), self._scan_done(2)))
             return
@@ -5701,6 +7672,8 @@ class AntivirusTab(Page):
                     continue          # wird übersprungen, zählt nicht als Datei (wie bei find -type f)
                 sc["files"] += 1
                 sc["last_file"] = p
+                if sc["first_at"] is None:
+                    sc["first_at"] = time.time()     # ab hier wird gescannt (vorher: Signaturen laden)
                 if res == "OK":
                     try:
                         sc["bytes"] += os.lstat(p).st_size
@@ -5740,12 +7713,7 @@ class AntivirusTab(Page):
         self.st_rate.setText(f"{rate:.0f} Dateien/s · {fmt_bytes(brate)}/s")
         self.st_found.setText(str(len(self.found)))
         self.st_found.setStyleSheet(f"color: {COLORS['danger']};" if self.found else "")
-        if tf and rate > 0 and files < tf:
-            rest = int((tf - files) / rate)
-            self.scan_eta.setText(f"Restzeit ca. {rest // 3600}:{rest // 60 % 60:02d} h" if rest >= 3600
-                                  else (f"Restzeit ca. {rest // 60} Min" if rest >= 60 else "Restzeit unter 1 Min"))
-        else:
-            self.scan_eta.setText("")
+        self.scan_eta.setText(self._eta_text(sc, now))
         quiet = int(now - sc["last_line"])
         last = sc["last_file"]
         proc = sc["proc"]
@@ -5762,6 +7730,32 @@ class AntivirusTab(Page):
                                       + " – Abbrechen und den Ordner ausschließen oder erneut versuchen.")
         elif proc is None:
             self.scan_state.set("info", "Startet …")
+
+    @staticmethod
+    def _dur(sec):
+        sec = int(sec)
+        if sec >= 3600:
+            return f"{sec // 3600}:{sec // 60 % 60:02d} h"
+        return f"{sec // 60} Min" if sec >= 60 else "unter 1 Min"
+
+    def _eta_text(self, sc, now):
+        """Hochrechnung: Tempo seit der ersten gescannten Datei (ohne die Ladezeit der Signaturen)."""
+        first, files = sc["first_at"], sc["files"]
+        total = sc["total_files"] or sc.get("count_files")
+        if not first or not total or now - first < 15 or files < 50:
+            return "Hochrechnung läuft …"
+        rate = files / (now - first)
+        if files >= total:
+            return ""
+        rest = (total - files) / rate
+        end = datetime.fromtimestamp(now + rest)
+        day = "" if end.date() == datetime.now().date() else \
+            ("morgen " if (end.date() - datetime.now().date()).days == 1 else end.strftime("%d.%m. "))
+        whole = (now - self.scan_started) + rest
+        if sc["total_files"]:
+            return (f"Restzeit ca. {self._dur(rest)} · fertig ca. {day}{end:%H:%M} Uhr · "
+                    f"gesamt ca. {self._dur(whole)}")
+        return f"Restzeit mind. {self._dur(rest)} (Dateien werden noch gezählt)"
 
     def _scan_line(self, line):
         line = line.strip()
@@ -6117,7 +8111,8 @@ def swap_state():
 
 
 # Kernel-Schutz: nur Werte, die im Alltag nichts kaputt machen
-HARDEN_SYSCTL = {"kernel.kexec_load_disabled": "1", "kernel.sysrq": "0"}
+HARDEN_SYSCTL = {"kernel.kexec_load_disabled": "1", "kernel.sysrq": "0", "kernel.dmesg_restrict": "1",
+                 "kernel.kptr_restrict": "2"}
 HARDEN_FILE = "/etc/sysctl.d/90-tuxdex-hardening.conf"
 
 
@@ -6125,6 +8120,24 @@ def sysctl_missing():
     """Namen der HARDEN_SYSCTL-Werte, die aktuell nicht gesetzt sind."""
     return [k for k, v in HARDEN_SYSCTL.items()
             if _read("/proc/sys/" + k.replace(".", "/")).strip() != v]
+
+
+def arch_audit_state():
+    """None (nicht installiert), "error" oder [(paket, behebbar, zeile)] betroffener Pakete."""
+    if not which("arch-audit"):
+        return None
+    try:
+        r = subprocess.run(["arch-audit"], capture_output=True, text=True, timeout=30)
+    except Exception:
+        return "error"
+    if r.returncode != 0 and not r.stdout.strip():
+        return "error"
+    res = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"Package (\S+) is affected by", line)
+        if m:
+            res.append((m.group(1), "Update to" in line, line))
+    return res
 
 
 def listening_ports():
@@ -6168,6 +8181,254 @@ def svc_enabled(name):
                               timeout=5).stdout.strip() == "enabled"
     except Exception:
         return False
+
+
+# --------------------------------------------------------------------------
+# Checkliste: Wartung, Datenschutz, Performance (Sicherheit → Checkliste)
+# --------------------------------------------------------------------------
+
+JOURNALD_FILE = "/etc/systemd/journald.conf.d/90-tuxdex.conf"
+COREDUMP_FILE = "/etc/systemd/coredump.conf.d/90-tuxdex.conf"
+IOSCHED_FILE = "/etc/udev/rules.d/60-tuxdex-ioscheduler.rules"
+# Muster für Zugangsdaten in der Shell-History – nur gezählt, nie angezeigt
+SECRET_RE = re.compile(r"(passw(or)?d\s*[=:]|--password[= ]\S|\btoken\s*[=:]|api[_-]?key\s*[=:]|secret\s*[=:]|"
+                       r"Authorization:\s*Bearer|\bAKIA[0-9A-Z]{16}\b|\bghp_[A-Za-z0-9]{30,}|\bglpat-[\w-]{20,}|"
+                       r"\bsk-[A-Za-z0-9]{20,}|\bxox[bap]-[\w-]{10,}|sshpass\s+-p\s*\S)", re.I)
+
+
+def _conf_value(paths, section, key):
+    """Letzter Wert eines Schlüssels aus systemd-artigen .conf-Dateien (inkl. .d-Ordner)."""
+    val = None
+    files = []
+    for p in paths:
+        if os.path.isdir(p):
+            files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".conf"))
+        elif os.path.exists(p):
+            files.append(p)
+    for f in files:
+        cur = None
+        for line in _read(f).splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                cur = line.strip("[]")
+            elif cur == section and re.match(rf"{key}\s*=", line):
+                val = line.split("=", 1)[1].strip()
+    return val
+
+
+def _pacman_siglevel():
+    """Liste der Stellen in pacman.conf, an denen Signaturen abgeschaltet sind."""
+    bad, sect = [], None
+    for line in _read("/etc/pacman.conf").splitlines():
+        s = line.split("#", 1)[0].strip()
+        if s.startswith("["):
+            sect = s.strip("[]")
+        elif re.match(r"SigLevel\s*=", s) and re.search(r"\bNever\b|\bTrustAll\b", s):
+            bad.append(sect or "options")
+    return bad
+
+
+def _pacman_log_issues():
+    """(Zeitpunkt, [Fehler/Warnungen]) des letzten vollständigen Updates aus pacman.log."""
+    txt = _read("/var/log/pacman.log")
+    i = txt.rfind("starting full system upgrade")
+    if i < 0:
+        return None, []
+    seg = txt[i:]
+    m = re.match(r"\[([^\]]+)\]", txt[txt.rfind("\n", 0, i) + 1:i])
+    lines = [l for l in seg.splitlines() if re.search(r"\[ALPM(-SCRIPTLET)?\] (error|warning):|error:", l)]
+    return (m.group(1) if m else None), lines[-40:]
+
+
+def _history_hits():
+    """{Datei: Anzahl verdächtiger Zeilen} in Bash/Zsh/Fish-History."""
+    home = os.path.expanduser("~")
+    res = {}
+    for f in (".bash_history", ".zsh_history", ".histfile", ".local/share/fish/fish_history"):
+        p = os.path.join(home, f)
+        try:
+            with open(p, errors="ignore") as fh:
+                n = sum(1 for line in fh if SECRET_RE.search(line))
+        except OSError:
+            continue
+        if n:
+            res["~/" + f] = n
+    return res
+
+
+def _screen_lock():
+    """True/False, wenn die Bildschirmsperre bekannt ist (KDE, GNOME, Cinnamon, MATE), sonst None."""
+    for tool in ("kreadconfig6", "kreadconfig5"):
+        if which(tool):
+            v = _cmd_out([tool, "--file", "kscreenlockerrc", "--group", "Daemon", "--key", "Autolock"]).strip()
+            return v.lower() != "false"
+    for schema in ("org.gnome.desktop.screensaver", "org.cinnamon.desktop.screensaver", "org.mate.screensaver"):
+        if which("gsettings"):
+            v = _cmd_out(["gsettings", "get", schema, "lock-enabled"]).strip()
+            if v in ("true", "false"):
+                return v == "true"
+    return None
+
+
+def _vscode_telemetry():
+    """[(Editor, Einstellung)] für VS Code/VSCodium mit eingeschalteter Telemetrie."""
+    out = []
+    for name, d in (("VS Code", "Code"), ("Code – OSS", "Code - OSS"), ("VSCodium", "VSCodium")):
+        p = os.path.expanduser(f"~/.config/{d}/User/settings.json")
+        if not os.path.isdir(os.path.dirname(os.path.dirname(p))):
+            continue
+        txt = _read(p)
+        m = re.search(r'"telemetry\.telemetryLevel"\s*:\s*"(\w+)"', txt)
+        if name == "VSCodium" and not m:
+            continue                  # VSCodium hat Telemetrie ab Werk aus
+        if not m or m.group(1) != "off":
+            out.append((name, p))
+    return out
+
+
+def _stale_modules():
+    """Modul-Ordner alter Kernel in /usr/lib/modules, die keinem Paket mehr gehören."""
+    base = "/usr/lib/modules"
+    try:
+        dirs = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+    except Exception:
+        return []
+    run = os.uname().release
+    cand = [d for d in dirs if d != run and not d.startswith("extramodules")]
+    if not cand:
+        return []
+    r = subprocess.run(["pacman", "-Qqo"] + [os.path.join(base, d) for d in cand], capture_output=True,
+                       text=True, timeout=30, env={**os.environ, "LC_ALL": "C"}) if which("pacman") else None
+    if r is None:
+        return []
+    owned = set()
+    for line in (r.stderr or "").splitlines():
+        m = re.search(r"No package owns (\S+)", line)
+        if m:
+            owned.add(os.path.basename(m.group(1).rstrip("/")))
+    return sorted(owned)
+
+
+def _disks_io():
+    """[(Laufwerk, rotierend, aktueller Scheduler, verfügbare)]"""
+    out = []
+    try:
+        names = os.listdir("/sys/block")
+    except Exception:
+        return out
+    for n in sorted(names):
+        if not re.match(r"^(sd[a-z]+|nvme\d+n\d+|mmcblk\d+|vd[a-z]+)$", n):
+            continue
+        sch = _first_line(f"/sys/block/{n}/queue/scheduler")
+        m = re.search(r"\[([\w-]+)\]", sch)
+        out.append((n, _first_line(f"/sys/block/{n}/queue/rotational") == "1", m.group(1) if m else sch or "?",
+                    sch.replace("[", "").replace("]", "").split()))
+    return out
+
+
+def _unit_enabled(unit):
+    return _cmd_out(["systemctl", "is-enabled", unit]).strip() in ("enabled", "enabled-runtime", "static")
+
+
+def checklist_state():
+    """Alle Werte für die Checkliste – läuft im Hintergrund, ohne root."""
+    c = {}
+    # Pakete
+    c["sig"] = _pacman_siglevel()
+    ml = "/etc/pacman.d/mirrorlist"
+    c["mirror_age"] = (time.time() - os.path.getmtime(ml)) / 86400 if os.path.exists(ml) else None
+    c["reflector"] = which("reflector")
+    c["reflector_timer"] = _unit_enabled("reflector.timer") if c["reflector"] else False
+    c["paclog"] = _pacman_log_issues()
+    c["reboot"] = kernel_modules_missing()
+    c["kernel"] = os.uname().release
+    c["kernel_pkgs"] = [k for k in ("linux", "linux-lts", "linux-zen", "linux-hardened")
+                        if os.path.exists(f"/usr/lib/modules/{c['kernel']}/pkgbase")
+                        and _read(f"/usr/lib/modules/{c['kernel']}/pkgbase").strip() == k]
+    # Zugriff
+    r = subprocess.run(["sudo", "-n", "sh", "-c", "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null"],
+                       capture_output=True, text=True, timeout=5) if which("sudo") else None
+    if r is not None and r.returncode == 0:
+        c["nopasswd"] = [l.strip() for l in r.stdout.splitlines()
+                         if "NOPASSWD" in l and not l.strip().startswith("#")]
+    else:
+        c["nopasswd"] = None
+    c["groups"] = _cmd_out(["id", "-nG"]).split()
+    c["lock"] = _screen_lock()
+    c["apparmor"] = _first_line("/sys/module/apparmor/parameters/enabled") == "Y"
+    c["usbguard"] = svc_active("usbguard") if which("usbguard") else None
+    # Datenschutz
+    c["journal_max"] = _conf_value(["/etc/systemd/journald.conf", "/etc/systemd/journald.conf.d"],
+                                   "Journal", "SystemMaxUse")
+    m = re.search(r"take up ([\d.]+\s*\w+)", _cmd_out(["journalctl", "--disk-usage"]))
+    c["journal_use"] = m.group(1) if m else None
+    c["core_storage"] = _conf_value(["/etc/systemd/coredump.conf", "/etc/systemd/coredump.conf.d"],
+                                    "Coredump", "Storage")
+    c["core_pattern"] = _read("/proc/sys/kernel/core_pattern").strip()
+    try:
+        c["core_files"] = len(os.listdir("/var/lib/systemd/coredump"))
+    except Exception:
+        c["core_files"] = 0
+    c["history"] = _history_hits()
+    c["ignorespace"] = bool(re.search(r"HISTCONTROL=\S*ignore(space|both)",
+                                      _read(os.path.expanduser("~/.bashrc")) + _read(os.path.expanduser(
+                                          "~/.bash_profile"))))
+    c["telemetry"] = _vscode_telemetry()
+    # Kernel
+    c["aslr"] = _read("/proc/sys/kernel/randomize_va_space").strip()
+    # Backup
+    cfg = backup_load()
+    c["bk_targets"] = cfg.get("targets", [])
+    c["bk_last"] = (cfg.get("history") or [{}])[0].get("at")
+    c["bk_sources"] = cfg.get("sources", [])
+    c["bk_schedule"] = cfg.get("schedule", "off")
+    c["root_fs"] = _cmd_out(["findmnt", "-n", "-o", "FSTYPE", "/"]).strip()
+    c["snap_tool"] = next((t for t in ("snapper", "timeshift", "btrbk") if which(t)), None)
+    # Performance
+    c["swappiness"] = _read("/proc/sys/vm/swappiness").strip()
+    c["mem"] = meminfo().get("MemTotal", 0)
+    c["swaps"] = swap_devices()
+    c["fstrim"] = _unit_enabled("fstrim.timer")
+    c["disks"] = _disks_io()
+    c["governor"] = _first_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    c["tmp_fs"] = _cmd_out(["findmnt", "-n", "-o", "FSTYPE", "/tmp"]).strip()
+    # Wartung
+    out = _cmd_out(["journalctl", "-p", "3", "-b", "-q", "--no-pager", "-o", "short-monotonic"], 15)
+    c["jerr"] = [l for l in out.splitlines() if l.strip()]
+    c["failed"] = [l.split()[0] for l in _cmd_out(["systemctl", "--failed", "--no-legend", "--plain"]).splitlines()
+                   if l.strip()]
+    c["ntp"] = _cmd_out(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]).strip()
+    c["ntp_on"] = _cmd_out(["timedatectl", "show", "-p", "NTP", "--value"]).strip()
+    c["stale_mods"] = _stale_modules()
+    c["orphans"] = [l for l in _cmd_out(["pacman", "-Qdtq"]).split() if l]
+    try:
+        c["cache"] = sum(e.stat().st_size for e in os.scandir("/var/cache/pacman/pkg") if e.is_file())
+    except Exception:
+        c["cache"] = None
+    return c
+
+
+def show_text(parent, title, heading, text):
+    """Einfaches Fenster mit Text in Monospace (z. B. Fehlerliste)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(28, 24, 28, 20)
+    lay.setSpacing(12)
+    lay.addWidget(Label(heading, "DialogTitle"))
+    box = QPlainTextEdit(text)
+    box.setObjectName("Log")
+    box.setReadOnly(True)
+    box.setFont(QFont(FONTS["mono"], 9))
+    box.setMinimumSize(760, 360)
+    lay.addWidget(box)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    ok = Button("Schließen", "primary", dlg.accept)
+    ok.setDefault(True)
+    row.addWidget(ok)
+    lay.addLayout(row)
+    dlg.exec()
 
 
 class CheckRow(QFrame):
@@ -6237,14 +8498,15 @@ class SecurityTab(Page):
         # ---------- Übersicht ----------
         ov = Panel("Übersicht")
         self.rows = {}
-        for key, title in (("vpn", "VPN"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
+        for key, title in (("vpn", "VPN"), ("dns", "DNS"), ("proxy", "Proxy"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
                            ("sb", "Secure Boot"), ("ucode", "CPU-Microcode"), ("swapenc", "Swap-Verschlüsselung"),
-                           ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("av", "Antivirus"),
+                           ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("cve", "Bekannte Sicherheitslücken"), ("av", "Antivirus"),
                            ("ports", "Offene Netzwerk-Ports"), ("ssh", "SSH-Server")):
             r = CheckRow(title)
             self.rows[key] = r
             ov.body.addWidget(r)
         self.lay.addWidget(ov)
+        self.lay.addWidget(self._build_checklist())
 
         # ---------- Offene Ports ----------
         self.ports_panel = Panel("Offene Ports", [Button("↻", "icon", self.refresh_ports, "Neu prüfen")])
@@ -6274,6 +8536,21 @@ class SecurityTab(Page):
         net.body.addLayout(Field("Lokale Adressen", self.ip_local))
         net.body.addWidget(self.ip_pub)
         self.lay.addWidget(net)
+
+        # ---------- Leak-Test ----------
+        self.leak_btn = Button("Test starten", "primary", self.run_leak_test)
+        lk = Panel("Leak-Test & VPN-Erkennung", [self.leak_btn])
+        lk.body.addWidget(Label("Prüft, welche DNS-Server deine Anfragen wirklich beantworten (DNS-Leak) und ob "
+                                "Webseiten deine Verbindung als VPN, Proxy, Tor oder Rechenzentrum erkennen. "
+                                "Fragt bash.ws, ipapi.is und am.i.mullvad.net.", "Hint", wrap=True))
+        self.leak_rows = {}
+        for key, title in (("leak", "DNS-Leak"), ("detect", "Erkennung durch Webseiten"),
+                           ("dnslist", "DNS-Server, die Webseiten sehen"), ("black", "Sperrlisten")):
+            row = CheckRow(title)
+            row.set("off", "Nicht geprüft", "")
+            self.leak_rows[key] = row
+            lk.body.addWidget(row)
+        self.lay.addWidget(lk)
 
         # ---------- Mullvad ----------
         self.mv_panel = Panel("Mullvad VPN")
@@ -6313,7 +8590,20 @@ class SecurityTab(Page):
         acc = QHBoxLayout()
         acc.setSpacing(8)
         self.acc_info = Label("", "Value", wrap=True)
-        acc.addLayout(Field("Konto", self.acc_info), 1)
+        self.acc_num = ""          # volle Kontonummer, nur auf Wunsch sichtbar
+        self.acc_rest = ""
+        self.b_eye = Button("", "icon", self._toggle_acc, "Kontonummer anzeigen")
+        self.b_eye.setCheckable(True)
+        self.b_eye.setIcon(svg_icon(EYE_SVG.replace("{c}", COLORS["muted"])))
+        info_row = QHBoxLayout()
+        info_row.setSpacing(8)
+        info_row.addWidget(self.b_eye)
+        info_row.addWidget(self.acc_info, 1)
+        acc_col = QVBoxLayout()
+        acc_col.setSpacing(4)
+        acc_col.addWidget(Label("KONTO", "FieldLabel"))
+        acc_col.addLayout(info_row)
+        acc.addLayout(acc_col, 1)
         self.acc_edit = LineEdit(placeholder="16-stellige Kontonummer", mono=True)
         self.acc_edit.setMaxLength(19)
         self.acc_edit.setEchoMode(QLineEdit.Password)
@@ -6449,6 +8739,8 @@ class SecurityTab(Page):
             ifaces, gw, dns = net_interfaces()
             r["ifaces"], r["gw"], r["dns"] = ifaces, gw, dns
             r["vpn"] = vpn_state(ifaces)
+            r["dns_now"] = dns_state()
+            r["proxy"] = proxy_state()
             # Firewall
             r["fw"] = svc_active("ufw") or svc_active("firewalld") or svc_active("nftables") \
                 or svc_active("iptables")
@@ -6459,6 +8751,7 @@ class SecurityTab(Page):
             r["ucode"] = microcode_state()
             r["swap"] = swap_state()
             r["sysctl"] = sysctl_missing()
+            r["cve"] = arch_audit_state()
             # Updates
             last = None
             try:
@@ -6491,6 +8784,7 @@ class SecurityTab(Page):
         self.mv_refresh()
         self.fw_refresh()
         self.refresh_ports()
+        self.refresh_checklist()
 
     def _goto(self, widget):
         QTimer.singleShot(0, lambda: self.ensureWidgetVisible(widget, 0, 40))
@@ -6499,6 +8793,24 @@ class SecurityTab(Page):
         warn = 0
         # VPN
         warn += self._show_vpn(r["vpn"])
+        # DNS
+        d = r["dns_now"]
+        if not d:
+            self.rows["dns"].set("off", "Unbekannt", "Es wurde kein DNS-Server gefunden.")
+        else:
+            vpn_link = iface_kind(d["link"]) == "VPN" if d["link"] else False
+            txt = (f"{d['provider']} · {d['server']}" + (f" über {d['link']}" if d["link"] else "") + ". "
+                   + ("Anfragen laufen verschlüsselt (DNS-over-TLS)." if d["dot"] else
+                      "Anfragen laufen durch den VPN-Tunnel." if vpn_link else
+                      "Anfragen sind unverschlüsselt – der Netzbetreiber kann sehen, welche Seiten du aufrufst."))
+            self.rows["dns"].set("ok" if d["dot"] or vpn_link else "info",
+                                 "Verschlüsselt" if d["dot"] else ("Über VPN" if vpn_link else "Unverschlüsselt"), txt)
+        # Proxy
+        if r["proxy"]:
+            self.rows["proxy"].set("info", "Eingestellt", " · ".join(f"{q}: {d}" for q, d in r["proxy"])
+                                   + ". Programme schicken ihren Verkehr über diesen Proxy.")
+        else:
+            self.rows["proxy"].set("ok", "Keiner", "Es ist kein System-Proxy eingestellt.")
         # Firewall
         if r["fw"]:
             self.rows["fw"].set("ok", "Aktiv", f"{r['fw_name']} läuft"
@@ -6558,12 +8870,14 @@ class SecurityTab(Page):
         miss = r["sysctl"]
         if not miss:
             self.rows["kernel"].set("ok", "Aktiv", "Kernel-Austausch im laufenden Betrieb (kexec) und "
-                                                   "SysRq-Tastenkürzel sind gesperrt.")
+                                                   "SysRq-Tastenkürzel sind gesperrt, Kernel-Meldungen und "
+                                                   "-Adressen nur für root lesbar.")
         else:
             warn += 1
             self.rows["kernel"].set("warn", "Offen", "Nicht gesetzt: " + ", ".join(
                 f"{k}={HARDEN_SYSCTL[k]}" for k in miss) + ". Sperrt den Kernel-Austausch im laufenden Betrieb "
-                "(kexec) und SysRq-Tastenkürzel – im Alltag ohne Nachteile.", "Aktivieren", self.harden_kernel)
+                "(kexec) und SysRq-Tastenkürzel und verbirgt Kernel-Meldungen (dmesg) und -Adressen vor normalen "
+                "Programmen – im Alltag ohne Nachteile.", "Aktivieren", self.harden_kernel)
         # Updates
         last = r["last_upgrade"]
         imp = [u for u in r["pending"] if u.get("kind")]
@@ -6581,6 +8895,33 @@ class SecurityTab(Page):
                                      "Zu den Updates", goto_upd)
             else:
                 self.rows["upd"].set("ok", "Aktuell", txt + ".")
+        # arch-audit
+        cve = r["cve"]
+        if cve is None:
+            self.rows["cve"].set("off", "Nicht installiert", "Optional: arch-audit gleicht die installierten Pakete "
+                                 "mit der Arch-Sicherheitsdatenbank ab (security.archlinux.org).", "Installieren",
+                                 lambda: self._root(["pacman", "-S", "--needed", "arch-audit"], interactive=True))
+        elif cve == "error":
+            self.rows["cve"].set("off", "Nicht prüfbar", "arch-audit konnte die Sicherheitsdatenbank nicht abrufen "
+                                                          "(keine Internetverbindung?).")
+        else:
+            fix = [c[0] for c in cve if c[1]]
+            nofix = [c[0] for c in cve if not c[1]]
+
+            def names(lst):
+                return ", ".join(lst[:8]) + (" …" if len(lst) > 8 else "")
+            if fix:
+                warn += 1
+                self.rows["cve"].set("warn", f"{len(fix)} behebbar",
+                                     f"Updates schließen Lücken in: {names(fix)}."
+                                     + (f" Noch ohne Fix: {names(nofix)}." if nofix else ""), "Zu den Updates",
+                                     lambda: self.app.select([m[0] for m in MODULES].index("update")))
+            elif nofix:
+                self.rows["cve"].set("info", f"{len(nofix)} ohne Fix",
+                                     f"Bekannte Lücken ohne verfügbares Update: {names(nofix)}. "
+                                     "Nichts zu tun – der Fix kommt mit einem späteren Update.")
+            else:
+                self.rows["cve"].set("ok", "Keine bekannt", "Kein installiertes Paket hat eine bekannte Lücke.")
         # Antivirus
         av = r["av"]
         goto_av = lambda: self.app.select([m[0] for m in MODULES].index("antivirus"))
@@ -6635,7 +8976,13 @@ class SecurityTab(Page):
         ts = v.get("tailscale")
         route = v.get("route_dev") or "—"
         if mv_first.startswith("connected"):
-            self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(mv))
+            if v.get("mv_lockdown"):
+                self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden, Kill-Switch an. " + self._mv_location(mv))
+                return 0
+            self.rows["vpn"].set("info", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(mv)
+                                 + " Tipp: Kill-Switch (Lockdown) einschalten – dann geht auch bei einem "
+                                 "Verbindungsabbruch nichts am Tunnel vorbei.", "Kill-Switch an",
+                                 lambda: self._toggle_lockdown(True))
             return 0
         if ts and ts["running"] and ts["exit_node"]:
             self.rows["vpn"].set("ok", "Aktiv", f"Tailscale ist verbunden – dein Internetverkehr läuft über den "
@@ -6689,7 +9036,7 @@ class SecurityTab(Page):
 
     def harden_kernel(self):
         if not ask_confirm(self, "Kernel-Schutz", "Kernel-Austausch im laufenden Betrieb (kexec) und "
-                           "SysRq-Tastenkürzel sperren?\n\nWird in " + HARDEN_FILE + " gespeichert und gilt "
+                           "SysRq-Tastenkürzel sperren, Kernel-Meldungen (dmesg) und -Adressen nur für root?\n\nWird in " + HARDEN_FILE + " gespeichert und gilt "
                            "sofort und nach jedem Neustart.", "Aktivieren"):
             return
         body = "".join(f"{k} = {v}\n" for k, v in HARDEN_SYSCTL.items())
@@ -6714,6 +9061,87 @@ class SecurityTab(Page):
             ui(lambda: self.ip_pub.setText(txt))
         threading.Thread(target=worker, daemon=True).start()
 
+    def run_leak_test(self):
+        self.leak_btn.setEnabled(False)
+        self.leak_btn.setText("Teste …")
+        for row in self.leak_rows.values():
+            row.set("info", "Prüfe …", "")
+
+        def worker():
+            r = leak_test()
+            ui(lambda: self._show_leak(r))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_leak(self, r):
+        self.leak_btn.setEnabled(True)
+        self.leak_btn.setText("Erneut testen")
+        vpn = r["vpn"]
+        rep = r.get("rep")
+        # --- Erkennung ---
+        if rep:
+            where = " · ".join(x for x in (rep["ip"], rep["city"], rep["country"], rep["org"]) if x)
+            kinds = [k for k, on in (("VPN" + (f" ({rep['vpn_name']})" if rep["vpn_name"] else ""), rep["vpn"]),
+                                     ("Proxy", rep["proxy"]), ("Tor", rep["tor"]),
+                                     ("Rechenzentrum/Hosting", rep["hosting"])) if on]
+            if kinds:
+                self.leak_rows["detect"].set("info", "Erkannt", f"{where}. Webseiten erkennen: {', '.join(kinds)}. "
+                                             "Manche Dienste (Streaming, Banken) sperren oder fragen dann nach.")
+            else:
+                self.leak_rows["detect"].set("ok" if not vpn else "info", "Nicht erkannt",
+                                             f"{where}. Sieht aus wie ein normaler Internetanschluss"
+                                             + (" – das VPN wird nicht als solches erkannt." if vpn else "."))
+        else:
+            self.leak_rows["detect"].set("off", "Nicht prüfbar", f"ipapi.is nicht erreichbar ({r.get('rep_err')}).")
+        # --- DNS-Server laut bash.ws ---
+        dns = r.get("dns")
+        local = r.get("local_dns") or {}
+        local_via_vpn = bool(local.get("link")) and iface_kind(local["link"]) == "VPN"
+        if dns is not None:
+            if dns:
+                lst = "; ".join(f"{ip} ({', '.join(x for x in (c, a) if x)})" for ip, c, a in dns[:6])
+                self.leak_rows["dnslist"].set("info", f"{len(dns)} Server", lst + ".")
+            else:
+                self.leak_rows["dnslist"].set("off", "Keine gesehen", "bash.ws hat keine DNS-Anfrage empfangen.")
+        else:
+            self.leak_rows["dnslist"].set("off", "Nicht prüfbar", f"bash.ws nicht erreichbar ({r.get('dns_err')}).")
+        # --- Leak-Bewertung ---
+        if not vpn:
+            self.leak_rows["leak"].set("off", "Kein VPN", "Ohne VPN gibt es kein Leck im eigentlichen Sinn: "
+                                       f"DNS geht an {local.get('provider', 'deinen DNS-Server')}"
+                                       + (" (verschlüsselt)." if local.get("dot") else
+                                          " – dein Netzbetreiber kann die aufgerufenen Seiten sehen."))
+        else:
+            rep_asn = (rep or {}).get("asn", "")
+            foreign = [d for d in (dns or []) if rep_asn and d[2] and rep_asn not in d[2]]
+            if local and not local_via_vpn and not local.get("dot") and \
+                    local.get("provider", "").startswith(("Router", "Internetanbieter")):
+                self.leak_rows["leak"].set("danger", "Leck", f"DNS-Anfragen gehen an {local['provider']} "
+                                           f"({local['server']}) über {local.get('link') or 'das normale Netz'} – "
+                                           "am VPN vorbei. Im VPN-Programm den VPN-DNS erzwingen (Mullvad: "
+                                           "Kill-Switch/Lockdown).")
+            elif foreign and not r.get("mullvad", {}).get("mullvad_exit_ip"):
+                self.leak_rows["leak"].set("warn", "Möglich", "Einige DNS-Server gehören nicht zum Anbieter deiner "
+                                           "VPN-Adresse: " + ", ".join(f"{d[0]} ({d[2]})" for d in foreign[:4])
+                                           + ". Prüfen, ob das dein gewollter DNS-Dienst ist.")
+            elif dns is None:
+                self.leak_rows["leak"].set("off", "Nicht prüfbar", "Der Leak-Test-Dienst war nicht erreichbar.")
+            else:
+                self.leak_rows["leak"].set("ok", "Kein Leck", "Alle DNS-Anfragen laufen über das VPN.")
+        # --- Sperrlisten (Mullvad-Check) ---
+        mv = r.get("mullvad")
+        if mv:
+            bl = mv.get("blacklisted") or {}
+            hits = [x.get("name") or x.get("link") or "?" for x in bl.get("results", []) if x.get("blacklisted")]
+            if bl.get("blacklisted") or hits:
+                self.leak_rows["black"].set("warn", "Gelistet", "Deine öffentliche IP steht auf Sperrlisten: "
+                                            + ", ".join(hits[:5]) + ". Manche Seiten zeigen dann Captchas.")
+            else:
+                self.leak_rows["black"].set("ok", "Sauber", "Deine öffentliche IP steht auf keiner bekannten "
+                                                           "Sperrliste.")
+        else:
+            self.leak_rows["black"].set("off", "Nicht prüfbar", f"am.i.mullvad.net nicht erreichbar "
+                                                                f"({r.get('mullvad_err')}).")
+
     def _root(self, cmd, then=None, interactive=False):
         if not self.app.priv.ensure(self):
             return
@@ -6726,6 +9154,356 @@ class SecurityTab(Page):
             self.refresh_all()
         run_streaming(cmd, self.log, needs_sudo=True, clear_first=False, on_done=done, interactive=interactive)
 
+
+    # ======================================================================
+    # Checkliste: Wartung, Datenschutz, Performance
+    # ======================================================================
+
+    CHECK_GROUPS = [
+        ("Pakete & Updates", [("sig", "Paketsignaturen"), ("mirror", "Spiegelserver (Mirrors)"),
+                              ("paclog", "Letztes Update (pacman.log)"), ("kern", "Kernel & Neustart")]),
+        ("Zugriff", [("sudo", "sudo ohne Passwort (NOPASSWD)"), ("groups", "Benutzergruppen"),
+                     ("lock", "Bildschirmsperre"), ("mac", "AppArmor"), ("usb", "USB-Schutz (usbguard)")]),
+        ("Datenschutz", [("journal", "System-Protokoll (journald)"), ("core", "Speicherabbilder (Core Dumps)"),
+                         ("hist", "Shell-Verlauf"), ("telem", "Telemetrie in Editoren")]),
+        ("Kernel", [("aslr", "Adress-Zufall (ASLR)")]),
+        ("Backup", [("backup", "Backup"), ("pkglist", "Paketliste"), ("snap", "System-Snapshots")]),
+        ("Performance", [("trim", "TRIM für SSDs"), ("io", "I/O-Scheduler"), ("swapcfg", "Swap & Swappiness"),
+                         ("gov", "CPU-Regler"), ("tmp", "/tmp im Arbeitsspeicher")]),
+        ("Laufende Wartung", [("jerr", "Fehler seit dem Start"), ("failed", "Fehlgeschlagene Dienste"),
+                              ("ntp", "Uhrzeit (NTP)"), ("mods", "Alte Kernel-Module"),
+                              ("clean", "Verwaiste Pakete & Paket-Cache")]),
+    ]
+
+    def _build_checklist(self):
+        self.cl_badge = StatusBadge("off", "Prüfe …")
+        p = Panel("Checkliste: Wartung, Datenschutz & Performance",
+                  [self.cl_badge, Button("↻", "icon", self.refresh_checklist, "Neu prüfen")])
+        p.body.addWidget(Label("Weitere Punkte für ein gepflegtes Arch-System. Grün passt, Gelb lohnt einen Blick, "
+                               "Grau ist optional oder nur ein Hinweis. Knöpfe ändern nur, was dabeisteht.",
+                               "Hint", wrap=True))
+        self.cl_rows = {}
+        for group, items in self.CHECK_GROUPS:
+            head = Label(group.upper(), "FieldLabel")
+            head.setContentsMargins(0, 8, 0, 0)
+            p.body.addWidget(head)
+            for key, title in items:
+                r = CheckRow(title)
+                r.set("off", "…", "")
+                self.cl_rows[key] = r
+                p.body.addWidget(r)
+        return p
+
+    def refresh_checklist(self):
+        self.cl_badge.set("off", "Prüfe …")
+
+        def worker():
+            try:
+                c = checklist_state()
+            except Exception as e:
+                c = {"_error": str(e)}
+            ui(lambda: self._show_checklist(c))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_checklist(self, c):
+        if "_error" in c:
+            self.cl_badge.set("danger", "Fehler")
+            self.cl_rows["sig"].set("danger", "Fehler", c["_error"])
+            return
+        R = self.cl_rows
+        goto = lambda key: (lambda: self.app.select([m[0] for m in MODULES].index(key)))
+        # --- Pakete & Updates
+        if c["sig"]:
+            R["sig"].set("danger", "Abgeschaltet", "In /etc/pacman.conf steht SigLevel = Never/TrustAll bei: "
+                         + ", ".join(c["sig"]) + ". Pakete werden dann nicht auf Echtheit geprüft – dort auf "
+                         "„Required DatabaseOptional“ zurückstellen.")
+        else:
+            R["sig"].set("ok", "Aktiv", "pacman prüft die Signatur jedes Pakets.")
+        age = c["mirror_age"]
+        if c["reflector_timer"]:
+            R["mirror"].set("ok", "Automatisch", "reflector.timer hält die Liste aktuell.")
+        elif age is None:
+            R["mirror"].set("off", "Unbekannt", "Keine /etc/pacman.d/mirrorlist gefunden.")
+        else:
+            act = ("Jetzt aktualisieren", self.cl_mirrors) if c["reflector"] else \
+                ("reflector installieren", lambda: self._root(["pacman", "-S", "--needed", "reflector"],
+                                                             interactive=True))
+            R["mirror"].set("ok" if age < 90 else "warn", f"{age:.0f} Tage alt",
+                            "Die Liste der Download-Server. Ältere Listen führen zu langsamen oder veralteten "
+                            "Servern." + ("" if c["reflector"] else " reflector sucht die schnellsten aktuellen."),
+                            *act)
+        when, issues = c["paclog"]
+        if when is None:
+            R["paclog"].set("off", "Kein Eintrag", "In pacman.log steht noch kein vollständiges Update.")
+        elif issues:
+            R["paclog"].set("warn", f"{len(issues)} Meldungen", f"Beim Update am {when[:16].replace('T', ' ')} gab "
+                            "es Fehler oder Warnungen (z. B. .pacnew-Dateien, fehlgeschlagene Hooks).", "Anzeigen",
+                            lambda: show_text(self, "pacman.log", "Meldungen beim letzten Update",
+                                              "\n".join(issues)))
+        else:
+            R["paclog"].set("ok", "Sauber", f"Letztes Update am {when[:16].replace('T', ' ')} ohne Fehler.")
+        kv = c["kernel"] + (f" ({c['kernel_pkgs'][0]})" if c["kernel_pkgs"] else "")
+        if c["reboot"]:
+            R["kern"].set("warn", "Neustart nötig", f"Läuft: {kv}. Der Kernel wurde aktualisiert – bis zum "
+                          "Neustart fehlen Module (z. B. für USB-Sticks) und der neue Kernel ist nicht aktiv.")
+        else:
+            R["kern"].set("ok", "Aktuell", f"Läuft: {kv}."
+                          + ("" if "hardened" in kv else " Für erhöhten Schutzbedarf gibt es linux-hardened "
+                             "(manche Programme laufen damit eingeschränkt)."))
+        # --- Zugriff
+        if c["nopasswd"] is None:
+            R["sudo"].set("off", "Nicht geprüft", "Die sudo-Regeln sind nur mit Administrator-Rechten lesbar.",
+                          "Prüfen", lambda: self.app.priv.ensure(self) and self.refresh_checklist())
+        elif c["nopasswd"]:
+            R["sudo"].set("warn", f"{len(c['nopasswd'])} Regel(n)", "Ohne Passwort erlaubt: "
+                          + " · ".join(c["nopasswd"][:3]) + ". Jedes Programm unter deinem Benutzer kann diese "
+                          "Befehle als root ausführen – nur behalten, wenn nötig (visudo).")
+        else:
+            R["sudo"].set("ok", "Keine", "sudo fragt immer nach dem Passwort.")
+        risky = [g for g in c["groups"] if g in ("docker", "disk", "libvirt", "lxd", "root")]
+        R["groups"].set("warn" if risky else "ok", ", ".join(risky) if risky else "Unauffällig",
+                        ("Mitglied in: " + ", ".join(c["groups"]) + ". ")
+                        + ("Diese Gruppen geben praktisch root-Rechte ohne Passwort – nur behalten, wenn du sie "
+                           "brauchst (gpasswd -d BENUTZER GRUPPE)." if risky else ""))
+        if c["lock"] is None:
+            R["lock"].set("off", "Unbekannt", "Für diese Desktop-Umgebung kann Tuxdex die Sperre nicht auslesen – "
+                          "bitte in den Systemeinstellungen prüfen.")
+        else:
+            R["lock"].set("ok" if c["lock"] else "warn", "An" if c["lock"] else "Aus",
+                          "Der Bildschirm sperrt sich bei Inaktivität." if c["lock"] else
+                          "Der Bildschirm sperrt sich nicht automatisch – in den Systemeinstellungen einschalten.")
+        R["mac"].set("ok" if c["apparmor"] else "off", "Aktiv" if c["apparmor"] else "Optional",
+                     "AppArmor schränkt ein, worauf einzelne Programme zugreifen dürfen." if c["apparmor"] else
+                     "AppArmor ist nicht aktiv. Sinnvoll für Server oder erhöhten Schutzbedarf; braucht einen "
+                     "Kernel-Parameter (lsm=…,apparmor) und das Paket apparmor.")
+        if c["usbguard"] is None:
+            R["usb"].set("off", "Optional", "usbguard blockiert unbekannte USB-Geräte (Schutz gegen manipulierte "
+                         "Sticks). Nur bei physischem Zugriff Fremder sinnvoll.")
+        else:
+            R["usb"].set("ok" if c["usbguard"] else "warn", "Aktiv" if c["usbguard"] else "Installiert, aus",
+                         "usbguard läuft." if c["usbguard"] else "usbguard ist installiert, der Dienst läuft nicht.")
+        # --- Datenschutz
+        use = c["journal_use"] or "?"
+        if c["journal_max"]:
+            R["journal"].set("ok", "Begrenzt", f"Höchstens {c['journal_max']} (belegt: {use}).")
+        else:
+            R["journal"].set("info", "Unbegrenzt", f"Belegt: {use}. Ohne Grenze darf das Protokoll bis zu 10 % der "
+                             "Partition nutzen und hält Einträge sehr lange.", "Auf 500 MB / 1 Monat",
+                             self.cl_journald)
+        if (c["core_storage"] or "").lower() == "none" or not c["core_pattern"] or "false" in c["core_pattern"]:
+            R["core"].set("ok", "Aus", "Abgestürzte Programme hinterlassen keine Speicherabbilder.")
+        else:
+            R["core"].set("info", f"{c['core_files']} Dumps" if c["core_files"] else "An",
+                          "Bei Abstürzen landet der Arbeitsspeicher des Programms auf der Platte – darin können "
+                          "Passwörter stehen.", "Abschalten", self.cl_coredump)
+        hits = c["history"]
+        if hits:
+            R["hist"].set("warn", f"{sum(hits.values())} Treffer",
+                          "Zeilen, die nach Passwort oder Token aussehen, in: " + ", ".join(
+                              f"{f} ({n})" for f, n in hits.items()) + ". Tuxdex zeigt sie nicht an – bitte selbst "
+                          "prüfen und löschen." + ("" if c["ignorespace"] else " Tipp: HISTCONTROL=ignorespace in "
+                                                   "~/.bashrc – Befehle mit Leerzeichen davor landen nicht im Verlauf."))
+        else:
+            R["hist"].set("ok", "Unauffällig", "Kein Passwort oder Token im Shell-Verlauf gefunden."
+                          + ("" if c["ignorespace"] else " Tipp: HISTCONTROL=ignorespace in ~/.bashrc – Befehle mit "
+                             "Leerzeichen davor landen nicht im Verlauf."))
+        tel = c["telemetry"]
+        if tel:
+            R["telem"].set("warn", "An", "Telemetrie aktiv in: " + ", ".join(n for n, _ in tel) + ".",
+                           "Abschalten", lambda: self.cl_telemetry(tel))
+        else:
+            R["telem"].set("ok", "Aus", "VS Code / VSCodium senden keine Telemetrie (oder sind nicht installiert). "
+                           "Browser-Telemetrie bitte in dessen Einstellungen prüfen.")
+        # --- Kernel
+        R["aslr"].set("ok" if c["aslr"] == "2" else "danger", "Voll" if c["aslr"] == "2" else f"Wert {c['aslr']}",
+                      "Speicheradressen werden zufällig vergeben – erschwert Angriffe." if c["aslr"] == "2" else
+                      "kernel.randomize_va_space sollte 2 sein (Standard). Jemand hat es abgeschaltet.")
+        # --- Backup
+        if not c["bk_targets"]:
+            R["backup"].set("warn", "Kein Ziel", "Noch kein Backup-Ziel festgelegt.", "Zum Backup",
+                            goto("backup"))
+        else:
+            days = (time.time() - c["bk_last"]) / 86400 if c["bk_last"] else None
+            src = " ".join(c["bk_sources"])
+            miss = [n for n, p in (("/etc", "/etc"), ("Home", os.path.expanduser("~"))) if p not in src]
+            detail = ("Letztes Backup " + (fmt_ago(c["bk_last"]) if c["bk_last"] else "noch nie") + ". "
+                      + ("Zeitplan: " + {"off": "aus", "daily": "täglich", "weekly": "wöchentlich"}.get(
+                          c["bk_schedule"], c["bk_schedule"]) + ". ")
+                      + (f"Nicht gesichert: {', '.join(miss)}. " if miss else "")
+                      + "Wiederherstellen einmal ausprobieren, bevor es ernst wird.")
+            R["backup"].set("ok" if days is not None and days < 8 and not miss else "warn",
+                            f"vor {days:.0f} Tagen" if days is not None else "Noch nie", detail, "Zum Backup",
+                            goto("backup"))
+        pl = PKGLIST_FILE
+        if os.path.exists(pl):
+            R["pkglist"].set("ok", "Gespeichert", f"{short_path(pl)} vom "
+                             f"{datetime.fromtimestamp(os.path.getmtime(pl)).strftime('%d.%m.%Y')} – wird bei jedem "
+                             "Backup erneuert. Neu installieren: pacman -S --needed - < pakete.txt",
+                             "Jetzt speichern", self.cl_pkglist)
+        else:
+            R["pkglist"].set("warn", "Fehlt", "Die Liste aller selbst installierten Pakete macht eine Neuinstallation "
+                             "leicht. Tuxdex legt sie in ~/.config/tuxdex ab und erneuert sie bei jedem Backup.",
+                             "Jetzt speichern", self.cl_pkglist)
+        if c["root_fs"] == "btrfs":
+            R["snap"].set("ok" if c["snap_tool"] else "info", c["snap_tool"] or "Kein Werkzeug",
+                          "Btrfs-Snapshots vor Updates " + ("sind eingerichtet." if c["snap_tool"] else
+                                                            "machen ein Zurück in Sekunden möglich – z. B. mit "
+                                                            "snapper + snap-pac oder timeshift."))
+        else:
+            R["snap"].set("off", "Nicht möglich", f"System-Snapshots brauchen Btrfs (hier: {c['root_fs'] or '?'}). "
+                          "Die Tuxdex-Backups decken das über Snapshots auf einem Ziel ab.")
+        # --- Performance
+        ssd = [d for d in c["disks"] if not d[1]]
+        if not ssd:
+            R["trim"].set("off", "Keine SSD", "Kein SSD/NVMe-Laufwerk gefunden.")
+        else:
+            R["trim"].set("ok" if c["fstrim"] else "warn", "Wöchentlich" if c["fstrim"] else "Aus",
+                          "fstrim.timer gibt freie Blöcke einmal pro Woche an die SSD zurück." if c["fstrim"] else
+                          "Ohne TRIM werden SSDs mit der Zeit langsamer.", None if c["fstrim"] else "Einschalten",
+                          None if c["fstrim"] else lambda: self._root(["systemctl", "enable", "--now",
+                                                                       "fstrim.timer"]))
+        bad = [(n, cur) for n, rot, cur, av in c["disks"]
+               if (not rot and cur not in ("none", "mq-deadline", "kyber")) or (rot and cur not in ("bfq",
+                                                                                                    "mq-deadline"))]
+        if not c["disks"]:
+            R["io"].set("off", "—", "Keine Laufwerke gefunden.")
+        elif bad:
+            R["io"].set("info", "Anpassen", "Ungewöhnlich: " + ", ".join(f"{n}: {s}" for n, s in bad)
+                        + ". Empfohlen: none für NVMe, mq-deadline für SSD, bfq für Festplatten.", "Empfohlen setzen",
+                        self.cl_iosched)
+        else:
+            R["io"].set("ok", "Passend", " · ".join(f"{n}: {cur}" for n, _, cur, _ in c["disks"]))
+        ram_gb = c["mem"] / 1024 ** 3
+        sw = c["swappiness"]
+        if not c["swaps"]:
+            R["swapcfg"].set("warn", "Kein Swap", "Ohne Swap/zram beendet Linux bei vollem Speicher Programme.",
+                             "Zum Swap", goto("swap"))
+        elif sw.isdigit() and ram_gb >= 12 and int(sw) >= 60 and not any("zram" in d[0] for d in c["swaps"]):
+            R["swapcfg"].set("info", f"Swappiness {sw}", f"{ram_gb:.0f} GB RAM – mit 10–20 bleibt mehr im schnellen "
+                             "Arbeitsspeicher.", "Zum Swap", goto("swap"))
+        else:
+            R["swapcfg"].set("ok", f"Swappiness {sw}", ", ".join(short_path(d[0]) for d in c["swaps"])
+                             + (" – bei zram ist ein hoher Wert richtig." if any("zram" in d[0] for d in c["swaps"])
+                                else ""))
+        g = c["governor"]
+        R["gov"].set("ok" if g else "off", g or "—",
+                     {"powersave": "Stromsparend – bei amd-pstate/intel_pstate trotzdem voll schnell, der Energiemodus "
+                                   "entscheidet.", "performance": "Immer höchster Takt – schnell, aber mehr Strom und "
+                                   "Wärme.", "schedutil": "Passt den Takt der Last an – guter Standard."}.get(
+                         g, "Der Taktregler der CPU. Details: Taskmanager → Leistung → Prozessor."))
+        R["tmp"].set("ok" if c["tmp_fs"] == "tmpfs" else "info", "tmpfs" if c["tmp_fs"] == "tmpfs" else
+                     (c["tmp_fs"] or "Platte"), "/tmp liegt im Arbeitsspeicher – schnell und nach Neustart leer."
+                     if c["tmp_fs"] == "tmpfs" else "/tmp liegt auf der Platte. Arch nutzt normalerweise tmpfs "
+                     "(tmp.mount) – prüfen, ob /etc/fstab das überschreibt.")
+        # --- Laufende Wartung
+        je = c["jerr"]
+        R["jerr"].set("ok" if not je else "info", "Keine" if not je else f"{len(je)} Meldungen",
+                      "Seit dem Start keine Fehler im System-Protokoll." if not je else
+                      "Fehler im System-Protokoll seit dem Start (journalctl -p 3 -b). Viele sind harmlos (z. B. "
+                      "Firmware-Hinweise) – wiederkehrende lohnen einen Blick.", "Anzeigen" if je else None,
+                      (lambda: show_text(self, "Fehler seit dem Start", "journalctl -p 3 -b", "\n".join(je[-300:])))
+                      if je else None)
+        f = c["failed"]
+        R["failed"].set("ok" if not f else "warn", "Keine" if not f else f"{len(f)} Dienst(e)",
+                        "Alle Dienste laufen." if not f else "Fehlgeschlagen: " + ", ".join(f[:6])
+                        + ". Details: systemctl status NAME.", "Zurücksetzen" if f else None,
+                        (lambda: self._root(["systemctl", "reset-failed"])) if f else None)
+        if not c["ntp"]:
+            R["ntp"].set("off", "Unbekannt", "timedatectl meldet keinen Zeitabgleich (kein systemd-timesyncd?).")
+        elif c["ntp"] == "yes":
+            R["ntp"].set("ok", "Synchron", "Die Uhrzeit wird über das Netz abgeglichen.")
+        else:
+            R["ntp"].set("warn", "Nicht synchron", "Falsche Uhrzeit stört Zertifikate, Updates und Logs."
+                         + (" NTP ist aus." if c["ntp_on"] != "yes" else ""), "NTP einschalten",
+                         lambda: self._root(["timedatectl", "set-ntp", "true"]))
+        mods = c["stale_mods"]
+        R["mods"].set("ok" if not mods else "info", "Keine" if not mods else f"{len(mods)} Ordner",
+                      "Keine Reste alter Kernel." if not mods else "Übrig von entfernten Kernels: "
+                      + ", ".join(mods) + " (in /usr/lib/modules).", "Entfernen" if mods else None,
+                      (lambda: self.cl_stale_mods(mods)) if mods else None)
+        orph, cache = c["orphans"], c["cache"]
+        big = cache and cache > 3 * 1024 ** 3
+        R["clean"].set("info" if (orph or big) else "ok", f"{len(orph)} verwaist" if orph else "Sauber",
+                       (f"{len(orph)} Pakete, die nichts mehr braucht. " if orph else "")
+                       + (f"Paket-Cache: {fmt_bytes(cache)}." if cache is not None else ""),
+                       "Zum Aufräumen" if (orph or big) else None, goto("storage") if (orph or big) else None)
+        n_warn = sum(1 for r in R.values() if r.badge.property("tone") in ("warn", "danger"))
+        self.cl_badge.set("ok" if not n_warn else "warn", "Alles gut" if not n_warn else f"{n_warn} Hinweise")
+
+    # ---- Aktionen der Checkliste ----------------------------------------
+
+    def cl_mirrors(self):
+        if ask_confirm(self, "Spiegelserver", "Die 20 schnellsten aktuellen HTTPS-Server suchen und als "
+                       "/etc/pacman.d/mirrorlist speichern? Die alte Liste bleibt als mirrorlist.bak.", "Aktualisieren"):
+            self._root(["sh", "-c", "cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak; reflector --latest 20 "
+                        "--protocol https --sort rate --save /etc/pacman.d/mirrorlist"])
+
+    def cl_journald(self):
+        if not ask_confirm(self, "System-Protokoll begrenzen", "Das System-Protokoll auf 500 MB und einen Monat "
+                           f"begrenzen?\n\nWird in {JOURNALD_FILE} gespeichert. Ältere Einträge werden gelöscht.",
+                           "Begrenzen"):
+            return
+        body = "# Tuxdex\n[Journal]\nSystemMaxUse=500M\nMaxRetentionSec=1month\n"
+        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(JOURNALD_FILE)} && printf %s {shlex.quote(body)} > "
+                    f"{JOURNALD_FILE} && systemctl restart systemd-journald && journalctl --vacuum-size=500M "
+                    "--vacuum-time=1month"])
+
+    def cl_coredump(self):
+        if not ask_confirm(self, "Speicherabbilder abschalten", "Bei Abstürzen keine Speicherabbilder mehr speichern "
+                           "und vorhandene löschen?\n\nEntwickler brauchen sie manchmal zur Fehlersuche. Wird in "
+                           f"{COREDUMP_FILE} gespeichert.", "Abschalten"):
+            return
+        body = "# Tuxdex\n[Coredump]\nStorage=none\nProcessSizeMax=0\n"
+        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(COREDUMP_FILE)} && printf %s {shlex.quote(body)} > "
+                    f"{COREDUMP_FILE} && rm -f /var/lib/systemd/coredump/* && systemctl daemon-reload"])
+
+    def cl_telemetry(self, items):
+        names = ", ".join(n for n, _ in items)
+        if not ask_confirm(self, "Telemetrie abschalten", f"In {names} „telemetry.telemetryLevel“ auf „off“ setzen?",
+                           "Abschalten"):
+            return
+        for _, path in items:
+            txt = _read(path).strip()
+            try:
+                data = json.loads(txt) if txt else {}
+            except ValueError:
+                show_warning(self, "Telemetrie", f"{short_path(path)} enthält Kommentare oder ist ungültig – bitte "
+                             "im Editor unter Einstellungen → Telemetry selbst auf „off“ stellen.")
+                continue
+            data["telemetry.telemetryLevel"] = "off"
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+            except OSError as e:
+                show_error(self, "Telemetrie", str(e))
+        self.refresh_checklist()
+
+    def cl_iosched(self):
+        rules = ('# Tuxdex: I/O-Scheduler je Laufwerkstyp\n'
+                 'ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"\n'
+                 'ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", '
+                 'ATTR{queue/scheduler}="mq-deadline"\n'
+                 'ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"\n')
+        if not ask_confirm(self, "I/O-Scheduler", "Empfohlene Scheduler setzen (NVMe: none, SSD: mq-deadline, "
+                           f"Festplatte: bfq)?\n\nWird als udev-Regel in {IOSCHED_FILE} gespeichert.", "Setzen"):
+            return
+        self._root(["sh", "-c", f"printf %s {shlex.quote(rules)} > {IOSCHED_FILE} && modprobe -q bfq; "
+                    "udevadm control --reload && udevadm trigger --subsystem-match=block --action=change"])
+
+    def cl_stale_mods(self, mods):
+        if not ask_confirm(self, "Alte Kernel-Module", "Diese Ordner gehören zu keinem installierten Kernel mehr und "
+                           "werden gelöscht:\n\n" + "\n".join(f"/usr/lib/modules/{m}" for m in mods), "Entfernen",
+                           danger=True):
+            return
+        self._root(["rm", "-rf", "--"] + [f"/usr/lib/modules/{m}" for m in mods
+                                          if re.match(r"^[\w.+-]+$", m) and m != os.uname().release])
+
+    def cl_pkglist(self):
+        ok = save_pkglist()
+        self.app.set_status(f"Paketliste gespeichert: {short_path(PKGLIST_FILE)}" if ok else
+                            "Paketliste konnte nicht gespeichert werden.")
+        self.refresh_checklist()
 
     # ======================================================================
     # Offene Ports – je Port ein Knopf „Sperren“ / „Freigeben“
@@ -6917,8 +9695,6 @@ class SecurityTab(Page):
         acc = r.get("account", "")
         logged_in = bool(re.search(r"account(?: number)?:\s*\d", acc, re.I)) or "expires" in acc.lower()
         if logged_in:
-            num = re.search(r"(\d{4})\s*$", re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I).group(1)) \
-                if re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I) else None
             exp = re.search(r"Expires at\s*:\s*(.+)", acc, re.I)
             dev = re.search(r"Device name\s*:\s*(.+)", acc, re.I)
             exp_txt = exp.group(1).strip() if exp else "?"
@@ -6928,10 +9704,14 @@ class SecurityTab(Page):
                 exp_txt = exp_dt.strftime("%d.%m.%Y") + (f"  (noch {days} Tage)" if days >= 0 else "  (abgelaufen)")
             except Exception:
                 pass
-            self.acc_info.setText(f"•••• {num.group(1) if num else ''}  ·  gültig bis {exp_txt}"
-                                  + (f"  ·  Gerät „{dev.group(1).strip()}“" if dev else ""))
+            full = re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I)
+            self.acc_num = re.sub(r"\D", "", full.group(1)) if full else ""
+            self.acc_rest = f"  ·  gültig bis {exp_txt}" + (f"  ·  Gerät „{dev.group(1).strip()}“" if dev else "")
+            self._show_acc()
         else:
+            self.acc_num = self.acc_rest = ""
             self.acc_info.setText("Nicht angemeldet")
+        self.b_eye.setVisible(logged_in and bool(self.acc_num))
         for w in (self.acc_edit, self.b_login):
             w.setVisible(not logged_in)
         self.b_logout.setVisible(logged_in)
@@ -7052,6 +9832,20 @@ class SecurityTab(Page):
                       on_done=lambda rc: (self.log.append_text(
                           "Angemeldet.\n" if rc == 0 else "error: Anmeldung fehlgeschlagen – Nummer prüfen oder "
                           "Gerätelimit (5 Geräte) im Mullvad-Konto erreicht.\n"), self.mv_refresh()))
+
+    def _show_acc(self):
+        """Kontonummer standardmäßig komplett verdeckt; das Auge zeigt sie an."""
+        if self.b_eye.isChecked() and self.acc_num:
+            num = " ".join(self.acc_num[i:i + 4] for i in range(0, len(self.acc_num), 4))
+        else:
+            num = "•••• •••• •••• ••••"
+        self.acc_info.setText(num + self.acc_rest)
+
+    def _toggle_acc(self):
+        shown = self.b_eye.isChecked()
+        self.b_eye.setIcon(svg_icon((EYE_OFF_SVG if shown else EYE_SVG).replace("{c}", COLORS["muted"])))
+        self.b_eye.setToolTip("Kontonummer verbergen" if shown else "Kontonummer anzeigen")
+        self._show_acc()
 
     def mv_logout(self):
         if ask_confirm(self, "Mullvad abmelden", "Dieses Gerät vom Mullvad-Konto abmelden?\n"
@@ -7175,6 +9969,13 @@ APP_AUTHOR = "PyloGER"
 APP_COMPANY = "Voxellab"
 APP_AUTHOR_MAIL = "contact@voxellab.de"
 
+EYE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
+ stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>"""
+EYE_OFF_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
+ stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.9 3.9M6.6 6.6C3.7 8.5 2 12 2 12s3.5 7 10 7
+a10.4 10.4 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>"""
 GEAR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
 <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
@@ -7208,6 +10009,1440 @@ def svg_icon(svg, size=18):
 
 DEFAULT_REPO = "PyloGER/Tuxdex"   # GitHub-Repository für Updates (in den Einstellungen änderbar)
 DEFAULT_BRANCH = "main"
+# --------------------------------------------------------------------------
+# Backup: Snapshots (rsync + Hardlinks), Spiegel, komprimierte Archive –
+# auf mehrere Ziele gleichzeitig. Ohne Qt, damit der Zeitplan (tuxdex --backup)
+# auch ohne Fenster läuft.
+# --------------------------------------------------------------------------
+
+BACKUP_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "backup.json")
+BACKUP_DIRNAME = "Tuxdex-Backup"
+BACKUP_TS = "%Y-%m-%d_%H%M%S"
+BACKUP_DEFAULTS = {
+    "sources": [os.path.expanduser("~")],
+    "excludes": ["~/.cache", "~/.local/share/Trash", "~/.local/share/Steam/steamapps"],
+    "targets": [], "disabled": [], "mode": "snapshot", "compression": "zstd", "level": "standard",
+    "keep": 10, "verify": True, "delete": True, "root": False, "encrypt": False, "schedule": "off",
+    "history": [], "name_pattern": "",
+}
+BACKUP_INDEX = ".tuxdex-names.json"   # Name → Zeitpunkt, damit frei benannte Backups richtig sortiert werden
+# Platzhalter im Namensmuster: yyyy mm dd (Datum), HH MM SS (Uhrzeit). Nur, wenn sie nicht an Buchstaben
+# grenzen – „Sommer“ bleibt „Sommer“, „yyyymmdd“ wird trotzdem ersetzt.
+_NAME_TOKENS = {"yyyy": "%Y", "mm": "%m", "dd": "%d", "HH": "%H", "MM": "%M", "SS": "%S"}
+_NAME_RUN = re.compile(r"(?<![A-Za-zÄÖÜäöüß])((?:yyyy|mm|dd|HH|MM|SS)+)(?![A-Za-zÄÖÜäöüß])")
+
+
+def backup_label(pattern, when):
+    """Ordner-/Dateiname eines Backups aus dem Namensmuster, z. B. „Laptop_yyyy-mm-dd“ → „Laptop_2026-09-27“."""
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return when.strftime(BACKUP_TS)
+    s = _NAME_RUN.sub(lambda m: re.sub(r"yyyy|mm|dd|HH|MM|SS", lambda t: when.strftime(_NAME_TOKENS[t.group(0)]),
+                                       m.group(1)), pattern)
+    s = re.sub(r"[/\\\x00-\x1f]", "-", s).strip().lstrip(".")
+    return s[:120] or when.strftime(BACKUP_TS)
+
+
+def _backup_when(name, path, index):
+    """Zeitpunkt eines Backups: aus der Namensliste, dem Standardnamen, einem Datum im Namen oder der Datei."""
+    if name in index:
+        try:
+            return datetime.fromisoformat(index[name])
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4}-\d{2}-\d{2}_\d{6})", name)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), BACKUP_TS)
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})", name)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(os.path.getmtime(path))
+# Dateisysteme mit Linux-Rechten und Hardlinks (Snapshots möglich)
+LINUX_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "jfs", "reiserfs", "zfs", "bcachefs", "nilfs2"}
+FAT_FS = {"vfat", "msdos", "fat"}                  # 4-GB-Grenze je Datei → Archive werden geteilt
+PART_SIZE = 4000 * 1024 * 1024
+# name: (Programm, Endung, Stufen, Optionen fürs Packen, Befehl zum Entpacken)
+COMPRESSORS = {
+    "zstd": ("zstd", ".tar.zst", {"schnell": ["-1"], "standard": ["-6"], "stark": ["-19"]},
+             ["-T0", "-q", "-c"], ["zstd", "-d", "-q", "-c"]),
+    "xz": ("xz", ".tar.xz", {"schnell": ["-1"], "standard": ["-6"], "stark": ["-9e"]},
+           ["-T0", "-c"], ["xz", "-d", "-c"]),
+    "gzip": ("pigz" if shutil.which("pigz") else "gzip", ".tar.gz", {"schnell": ["-1"], "standard": ["-6"],
+                                                                   "stark": ["-9"]}, ["-c"], ["gzip", "-d", "-c"]),
+    "none": (None, ".tar", {}, [], None),
+}
+ARCHIVE_RE = re.compile(r"^(?P<base>.+?(?P<ext>\.tar(?:\.zst|\.xz|\.gz)?)(?P<gpg>\.gpg)?)(?:\.part(?P<part>\d{3}))?$")
+
+
+PKGLIST_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "pakete.txt")
+
+
+def save_pkglist():
+    """Selbst installierte Pakete (pakete.txt) und solche aus dem AUR (pakete-aur.txt) in ~/.config/tuxdex."""
+    if not which("pacman"):
+        return False
+    try:
+        os.makedirs(os.path.dirname(PKGLIST_FILE), exist_ok=True)
+        for args, path in ((["-Qqen"], PKGLIST_FILE), (["-Qqem"], PKGLIST_FILE.replace(".txt", "-aur.txt"))):
+            out = subprocess.run(["pacman"] + args, capture_output=True, text=True, timeout=30).stdout
+            with open(path, "w") as f:
+                f.write(out)
+        return True
+    except Exception:
+        return False
+
+
+def backup_load():
+    cfg = dict(BACKUP_DEFAULTS)
+    cfg.update(_load_json(BACKUP_FILE, {}))
+    return cfg
+
+
+def backup_save(cfg):
+    _save_json(BACKUP_FILE, cfg)
+
+
+def backup_host():
+    import socket
+    return re.sub(r"[^\w.-]", "_", socket.gethostname() or "linux")
+
+
+def fs_info(path):
+    """(Dateisystem, freie Bytes, Einhängepunkt) – (None, 0, None), wenn nicht erreichbar."""
+    if not os.path.isdir(path):
+        return None, 0, None
+    try:
+        st = os.statvfs(path)
+        free = st.f_bavail * st.f_frsize
+    except OSError:
+        return None, 0, None
+    try:
+        out = subprocess.run(["findmnt", "-n", "-o", "FSTYPE,TARGET", "--target", path], capture_output=True,
+                             text=True, timeout=5).stdout.split(None, 1)
+        return out[0], free, out[1].strip() if len(out) > 1 else None
+    except Exception:
+        return "?", free, None
+
+
+def backup_dir(target):
+    return os.path.join(target, BACKUP_DIRNAME, backup_host())
+
+
+def _expand(p):
+    return os.path.normpath(os.path.expanduser(p.strip()))
+
+
+def list_backups(target):
+    """Alle Backups auf einem Ziel, neueste zuerst: dict(kind, name, path, when, size, parts, encrypted)."""
+    base = backup_dir(target)
+    res = []
+    index = _load_json(os.path.join(base, BACKUP_INDEX), {})
+    snaps = os.path.join(base, "snapshots")
+    if os.path.isdir(snaps):
+        for n in os.listdir(snaps):
+            path = os.path.join(snaps, n)
+            if n.startswith(".") or n.endswith(".partial") or os.path.islink(path) or not os.path.isdir(path):
+                continue
+            when = _backup_when(n, path, index)
+            res.append({"kind": "snapshot", "name": n, "path": os.path.join(snaps, n), "when": when,
+                        "size": None, "parts": [], "encrypted": False})
+    mirror = os.path.join(base, "mirror")
+    if os.path.isdir(mirror):
+        stamp = os.path.join(base, ".mirror-stamp")
+        when = datetime.fromtimestamp(os.path.getmtime(stamp if os.path.exists(stamp) else mirror))
+        res.append({"kind": "mirror", "name": "Spiegel", "path": mirror, "when": when, "size": None,
+                    "parts": [], "encrypted": False})
+    arch = os.path.join(base, "archives")
+    if os.path.isdir(arch):
+        groups = {}
+        for n in sorted(os.listdir(arch)):
+            m = ARCHIVE_RE.match(n)
+            if not m or n.endswith(".partial"):
+                continue
+            groups.setdefault(m.group("base"), []).append(os.path.join(arch, n))
+        for b, parts in groups.items():
+            when = _backup_when(b, parts[0], index)
+            res.append({"kind": "archive", "name": b, "path": parts[0], "when": when,
+                        "size": sum(os.path.getsize(p) for p in parts), "parts": parts,
+                        "encrypted": b.endswith(".gpg")})
+    return sorted(res, key=lambda r: r["when"], reverse=True)
+
+
+def estimate_size(sources, excludes, use_sudo=False):
+    """Bytes aller Quellen ohne Ausnahmen (du)."""
+    cmd = (["sudo", "-n"] if use_sudo else []) + ["du", "-scb"] + [f"--exclude={e}" for e in excludes] + sources
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=900).stdout.strip().splitlines()
+        return int(out[-1].split()[0]) if out else 0
+    except Exception:
+        return 0
+
+
+class _PartWriter:
+    """Schreibt einen Datenstrom in eine Datei – auf FAT in 4-GB-Teile (.part001, .part002 …)."""
+
+    def __init__(self, path, split):
+        self.path, self.split = path, split
+        self.files, self.fh, self.cur, self.written = [], None, 0, 0
+        self._next()
+
+    def _next(self):
+        if self.fh:
+            self.fh.close()
+        name = (f"{self.path}.part{len(self.files) + 1:03d}" if self.split else self.path) + ".partial"
+        self.files.append(name)
+        self.fh = open(name, "wb")
+        self.cur = 0
+
+    def write(self, data):
+        while data:
+            if self.split and self.cur >= PART_SIZE:
+                self._next()
+            n = len(data) if not self.split else min(len(data), PART_SIZE - self.cur)
+            self.fh.write(data[:n])
+            self.cur += n
+            self.written += n
+            data = data[n:]
+
+    def close(self):
+        if self.fh:
+            self.fh.close()
+            self.fh = None
+
+    def finish(self):
+        self.close()
+        final = []
+        for f in self.files:
+            os.replace(f, f[:-len(".partial")])
+            final.append(f[:-len(".partial")])
+        if self.split and len(final) == 1:          # nur ein Teil → normaler Dateiname
+            os.replace(final[0], self.path)
+            final = [self.path]
+        self.files = final
+        return final
+
+    def discard(self):
+        self.close()
+        for f in self.files:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+class BackupJob:
+    """Führt ein Backup auf mehrere Ziele gleichzeitig aus.
+    on_progress(ziel, dict) · on_log(text) · on_done(ok, zusammenfassung) – werden aus Threads aufgerufen."""
+
+    RSYNC_RE = re.compile(r"^\s*([\d,.]+)\s+(\d+)%\s+(\S+/s)\s+(\d+:\d{2}:\d{2})")
+
+    def __init__(self, cfg, targets, on_progress, on_log, on_done, passphrase=None, use_sudo=False):
+        self.cfg, self.targets = cfg, targets
+        self.on_progress, self.on_log, self.on_done = on_progress, on_log, on_done
+        self.passphrase, self.use_sudo = passphrase, use_sudo
+        self.procs, self.cancelled = [], False
+        self.now = datetime.now()
+        self.ts = self.now.strftime(BACKUP_TS)
+        self.label = backup_label(cfg.get("name_pattern"), self.now)
+        self.results = {}
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def cancel(self):
+        self.cancelled = True
+        for p in list(self.procs):
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception:
+                pass
+
+    def _sudo(self):
+        return ["sudo", "-n"] if self.use_sudo else []
+
+    def _popen(self, cmd, **kw):
+        p = track(subprocess.Popen(cmd, **kw))
+        self.procs.append(p)
+        return p
+
+    def _prog(self, t, **kw):
+        self.on_progress(t, kw)
+
+    # ---- Ablauf ----
+    def _run(self):
+        t0 = time.time()
+        cfg = self.cfg
+        save_pkglist()           # Paketliste landet mit ~/.config im Backup
+        self.sources = [s for s in (_expand(x) for x in cfg["sources"]) if os.path.exists(s)]
+        self.excludes = [_expand(e) for e in cfg["excludes"] if e.strip()]
+        # Ziele, die in einer Quelle liegen, nicht mitsichern (sonst sichert sich das Backup selbst)
+        for t in self.targets:
+            bd = os.path.join(t, BACKUP_DIRNAME)
+            if any(bd == s or bd.startswith(s.rstrip("/") + "/") for s in self.sources):
+                self.excludes.append(bd)
+        if not self.sources:
+            self.on_log("Keine vorhandenen Quellen ausgewählt.\n")
+            self.on_done(False, "Keine Quellen")
+            return
+        self.on_log(f"Quellen: {', '.join(short_path(s) for s in self.sources)}\n"
+                    f"Ausnahmen: {', '.join(short_path(e) for e in self.excludes) or '—'}\n")
+        for t in self.targets:
+            self._prog(t, state="wait", msg="Umfang wird berechnet …")
+        self.total = estimate_size(self.sources, self.excludes, self.use_sudo)
+        self.on_log(f"Umfang: {fmt_bytes(self.total)}\n")
+        if self.cancelled:
+            self.on_done(False, "Abgebrochen")
+            return
+        if self.cfg["mode"] == "archive":
+            self._archive()
+        else:
+            threads = [threading.Thread(target=self._rsync, args=(t,), daemon=True) for t in self.targets]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+        ok = [t for t, r in self.results.items() if r == "ok"]
+        dur = int(time.time() - t0)
+        summary = (f"{len(ok)} von {len(self.targets)} Zielen erfolgreich · {fmt_bytes(self.total)} · "
+                   f"Dauer {dur // 3600}:{dur // 60 % 60:02d}:{dur % 60:02d}")
+        if not self.cancelled:
+            cfg = backup_load()
+            cfg["history"] = ([{"at": time.time(), "mode": self.cfg["mode"], "targets": self.targets,
+                                "ok": len(ok), "size": self.total, "dur": dur}] + cfg.get("history", []))[:30]
+            backup_save(cfg)
+        self.on_done(bool(ok) and len(ok) == len(self.targets) and not self.cancelled,
+                     "Abgebrochen" if self.cancelled else summary)
+
+    # ---- Snapshot / Spiegel (rsync, je Ziel ein Prozess) ----
+    def _rsync(self, target):
+        mode = self.cfg["mode"]
+        fstype, free, _ = fs_info(target)
+        base = backup_dir(target)
+        linux = fstype in LINUX_FS
+        if mode == "snapshot" and not linux:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"Snapshots brauchen ein Linux-Dateisystem (ist: {fstype}). "
+                                                  "Für dieses Ziel „Archiv“ nutzen.")
+            return
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError as e:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"Ordner kann nicht angelegt werden: {e.strerror}")
+            return
+        opts = ["-aHAXR", "--numeric-ids"] if linux else ["-rtR", "--modify-window=2"]
+        cmd = self._sudo() + ["rsync"] + opts + ["--info=progress2", "--no-inc-recursive", "--partial"]
+        cmd += [f"--exclude={e}" for e in self.excludes]
+        if mode == "snapshot":
+            snaps = os.path.join(base, "snapshots")
+            os.makedirs(snaps, exist_ok=True)
+            prev = [b for b in list_backups(target) if b["kind"] == "snapshot"]
+            if prev:
+                cmd.append(f"--link-dest={prev[0]['path']}")
+            if not getattr(self, "snap_name", None):
+                self.snap_name = self._unique(self.label, lambda b, n: os.path.exists(
+                    os.path.join(b, "snapshots", n)) or os.path.exists(os.path.join(b, "snapshots", n + ".partial")))
+            dest = os.path.join(snaps, self.snap_name + ".partial")
+        else:
+            dest = os.path.join(base, "mirror")
+            if self.cfg.get("delete", True):
+                cmd += ["--delete", "--delete-excluded"]
+        cmd += self.sources + [dest + "/"]
+        self.on_log(f"[{short_path(target)}] $ {' '.join(shlex.quote(c) for c in cmd)}\n")
+        self._prog(target, state="run", msg="Startet …")
+        t0 = time.time()
+        try:
+            p = self._popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "LC_ALL": "C"})
+        except Exception as e:
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=str(e))
+            return
+        errs = []
+        threading.Thread(target=lambda: errs.extend(p.stderr.read().decode(errors="replace").splitlines()),
+                         daemon=True).start()
+        buf = b""
+        while True:
+            ch = p.stdout.read1(4096) if hasattr(p.stdout, "read1") else p.stdout.read(4096)
+            if not ch:
+                break
+            buf += ch
+            *lines, buf = re.split(rb"[\r\n]", buf)
+            for ln in lines:
+                m = self.RSYNC_RE.match(ln.decode(errors="replace"))
+                if m:
+                    done = int(m.group(1).replace(",", "").replace(".", ""))
+                    self._prog(target, state="run", pct=int(m.group(2)), done=done, speed=m.group(3),
+                               eta=m.group(4), el=time.time() - t0)
+        rc = p.wait()
+        time.sleep(0.2)
+        for e in errs[:30]:
+            self.on_log(f"[{short_path(target)}] {e}\n")
+        if (self.cancelled or rc not in (0, 23, 24)) and mode == "snapshot":
+            self._run_quiet(self._sudo() + ["rm", "-rf", "--", dest])
+        if self.cancelled:
+            self.results[target] = "cancel"
+            self._prog(target, state="error", msg="Abgebrochen")
+            return
+        if rc not in (0, 23, 24):
+            self.results[target] = "error"
+            self._prog(target, state="error", msg=f"rsync-Fehler (Code {rc}) – Details in der Ausgabe.")
+            return
+        note = ""
+        if rc == 23:
+            note = " · einige Dateien nicht lesbar (ggf. mit root-Rechten sichern)"
+        elif rc == 24:
+            note = " · einige Dateien verschwanden während des Backups"
+        if mode == "snapshot":
+            final = dest[:-len(".partial")]
+            self._run_quiet(self._sudo() + ["mv", dest, final])
+            link = os.path.join(base, "latest")
+            try:
+                if os.path.islink(link):
+                    os.remove(link)
+                os.symlink(os.path.join("snapshots", self.snap_name), link)
+            except OSError:
+                pass
+            self._remember(target, self.snap_name)
+            self._retention(target)
+        else:
+            try:
+                with open(os.path.join(base, ".mirror-stamp"), "w") as f:
+                    f.write(self.ts)
+            except OSError:
+                pass
+        self.results[target] = "ok"
+        self._prog(target, state="ok", pct=100, msg="Fertig" + note, el=time.time() - t0)
+
+    def _run_quiet(self, cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=3600).returncode
+        except Exception:
+            return 1
+
+    def _unique(self, name, exists):
+        """Hängt _2, _3 … an, falls es den Namen auf einem Ziel schon gibt (z. B. zwei Backups am selben Tag)."""
+        cand, i = name, 1
+        while any(exists(backup_dir(t), cand) for t in self.targets):
+            i += 1
+            cand = f"{name}_{i}"
+        return cand
+
+    def _remember(self, target, name):
+        """Zeitpunkt zum Namen merken – frei benannte Backups werden so richtig sortiert und ausgedünnt."""
+        path = os.path.join(backup_dir(target), BACKUP_INDEX)
+        index = _load_json(path, {})
+        index[name] = self.now.isoformat(timespec="seconds")
+        try:
+            _save_json(path, index)
+        except Exception:
+            pass
+
+    def _retention(self, target):
+        keep = int(self.cfg.get("keep", 10) or 0)
+        if keep <= 0:
+            return
+        kind = "archive" if self.cfg["mode"] == "archive" else "snapshot"
+        old = [b for b in list_backups(target) if b["kind"] == kind][keep:]
+        for b in old:
+            self.on_log(f"[{short_path(target)}] Alte Version entfernt: {b['name']}\n")
+            if kind == "snapshot":
+                self._run_quiet(self._sudo() + ["rm", "-rf", "--", b["path"]])
+            else:
+                for p in b["parts"] + [b["parts"][0].split(".part")[0] + ".sha256"]:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+
+    # ---- Archiv: einmal packen, gleichzeitig auf alle Ziele schreiben ----
+    def _archive(self):
+        import hashlib
+        prog, ext, levels, popts, _ = COMPRESSORS.get(self.cfg.get("compression"), COMPRESSORS["zstd"])
+        enc = bool(self.passphrase)
+        label = self.label if (self.cfg.get("name_pattern") or "").strip() else f"{backup_host()}_{self.ts}"
+        suffix = ext + (".gpg" if enc else "")
+        label = self._unique(label, lambda b, n: any(
+            f.startswith(n + suffix) for f in (os.listdir(os.path.join(b, "archives"))
+                                               if os.path.isdir(os.path.join(b, "archives")) else [])))
+        name = label + suffix
+        writers = {}
+        for t in self.targets:
+            fstype, free, _ = fs_info(t)
+            d = os.path.join(backup_dir(t), "archives")
+            try:
+                os.makedirs(d, exist_ok=True)
+                writers[t] = _PartWriter(os.path.join(d, name), fstype in FAT_FS)
+                self._prog(t, state="run", msg="Packt …" + (" (in 4-GB-Teilen wegen FAT32)" if fstype in FAT_FS
+                                                             else ""))
+            except OSError as e:
+                self.results[t] = "error"
+                self._prog(t, state="error", msg=f"Kann nicht schreiben: {e.strerror}")
+        if not writers:
+            return
+        rel = [s.lstrip("/") or "." for s in self.sources]
+        tar = self._sudo() + ["tar", "-cpf", "-", "--xattrs", "--acls", "--ignore-failed-read",
+                              "--warning=no-file-changed", "-C", "/", "--anchored"]
+        tar += [f"--exclude={e.lstrip('/')}" for e in self.excludes] + ["--"] + rel
+        self.on_log(f"$ {' '.join(shlex.quote(c) for c in tar)}"
+                    + (f" | {prog} {' '.join(levels.get(self.cfg.get('level'), []))}" if prog else "")
+                    + (" | gpg --symmetric (AES-256)" if enc else "") + "\n")
+        errs = []
+        try:
+            p_tar = self._popen(tar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            threading.Thread(target=lambda: errs.extend(p_tar.stderr.read().decode(errors="replace").splitlines()),
+                             daemon=True).start()
+            stages, src = [], None
+            if prog:
+                p_c = self._popen([prog] + levels.get(self.cfg.get("level"), []) + popts, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE)
+                stages.append(p_c)
+            if enc:
+                r, w = os.pipe()
+                os.write(w, self.passphrase.encode())
+                os.close(w)
+                p_g = self._popen(["gpg", "--batch", "--yes", "--quiet", "--pinentry-mode", "loopback",
+                                   "--passphrase-fd", str(r), "--symmetric", "--cipher-algo", "AES256",
+                                   "--compress-algo", "none", "-o", "-"],
+                                  stdin=stages[-1].stdout if stages else subprocess.PIPE, stdout=subprocess.PIPE,
+                                  pass_fds=(r,))
+                os.close(r)
+                if stages:
+                    stages[-1].stdout.close()
+                stages.append(p_g)
+        except Exception as e:
+            for w in writers.values():
+                w.discard()
+            for t in writers:
+                self.results[t] = "error"
+                self._prog(t, state="error", msg=f"Start fehlgeschlagen: {e}")
+            return
+        first_in = stages[0].stdin if stages else None
+        last_out = stages[-1].stdout if stages else p_tar.stdout
+        state = {"read": 0}
+        t0 = time.time()
+
+        def pump():                         # tar → Packer (zählt die unkomprimierten Bytes)
+            try:
+                while True:
+                    ch = p_tar.stdout.read(1 << 20)
+                    if not ch:
+                        break
+                    state["read"] += len(ch)
+                    first_in.write(ch)
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            finally:
+                try:
+                    first_in.close()
+                except Exception:
+                    pass
+        if first_in:
+            threading.Thread(target=pump, daemon=True).start()
+        h = hashlib.sha256()
+        failed = {}
+        last_ui = 0
+        while True:
+            ch = last_out.read(1 << 20)
+            if not ch:
+                break
+            if not first_in:
+                state["read"] += len(ch)
+            h.update(ch)
+            for t, w in list(writers.items()):
+                if t in failed:
+                    continue
+                try:
+                    w.write(ch)
+                except OSError as e:
+                    failed[t] = "Ziel ist voll" if e.errno == 28 else f"Schreibfehler: {e.strerror}"
+                    self._prog(t, state="error", msg=failed[t])
+                    w.discard()
+            if len(failed) == len(writers):
+                self.cancel()
+                break
+            now = time.time()
+            if now - last_ui > 0.5:
+                last_ui = now
+                el = now - t0
+                rd = state["read"]
+                spd = rd / el if el > 0 else 0
+                pct = min(99, int(rd / self.total * 100)) if self.total else 0
+                eta = (self.total - rd) / spd if spd > 0 and self.total > rd else 0
+                for t, w in writers.items():
+                    if t not in failed:
+                        self._prog(t, state="run", pct=pct, done=rd, speed=f"{fmt_bytes(spd)}/s",
+                                   eta=f"{int(eta) // 3600}:{int(eta) // 60 % 60:02d}:{int(eta) % 60:02d}",
+                                   el=el, written=w.written)
+        rc_tar = p_tar.wait()
+        rcs = [s.wait() for s in stages]
+        for e in errs[:30]:
+            self.on_log(f"tar: {e}\n")
+        broken = self.cancelled or rc_tar not in (0, 1) or any(rcs)
+        digest = h.hexdigest()
+        ok_targets = []
+        for t, w in writers.items():
+            if t in failed:
+                self.results[t] = "error"
+                continue
+            if broken:
+                w.discard()
+                self.results[t] = "cancel" if self.cancelled else "error"
+                self._prog(t, state="error", msg="Abgebrochen" if self.cancelled else
+                           f"Packen fehlgeschlagen (tar {rc_tar}, Packer {rcs}) – Details in der Ausgabe.")
+                continue
+            files = w.finish()
+            try:
+                with open(os.path.join(os.path.dirname(w.path), name + ".sha256"), "w") as f:
+                    f.write(f"{digest}  {name}\n")
+            except OSError:
+                pass
+            ok_targets.append((t, files, w.written))
+        if broken:
+            return
+
+        def verify(t, files, size):
+            if self.cfg.get("verify", True):
+                self._prog(t, state="run", pct=100, msg="Prüfe geschriebene Daten …")
+                hv = hashlib.sha256()
+                try:
+                    for fpath in files:
+                        with open(fpath, "rb") as f:
+                            for ch in iter(lambda: f.read(1 << 20), b""):
+                                hv.update(ch)
+                except OSError as e:
+                    hv = None
+                    self.on_log(f"[{short_path(t)}] Prüfung fehlgeschlagen: {e}\n")
+                if not hv or hv.hexdigest() != digest:
+                    self.results[t] = "error"
+                    self._prog(t, state="error", msg="Prüfsumme stimmt nicht – Datenträger defekt?")
+                    return
+            self._remember(t, name)
+            self._retention(t)
+            self.results[t] = "ok"
+            note = f" · {len(files)} Teile" if len(files) > 1 else ""
+            ratio = f" · {size / self.total * 100:.0f} % der Originalgröße" if self.total else ""
+            self._prog(t, state="ok", pct=100, el=time.time() - t0, written=size,
+                       msg=f"Fertig · {fmt_bytes(size)}{ratio}{note}"
+                       + (" · geprüft" if self.cfg.get("verify", True) else ""))
+        ths = [threading.Thread(target=verify, args=a, daemon=True) for a in ok_targets]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join()
+
+
+def restore_command(b, dest, use_sudo, passfile=None):
+    """Shell-Befehl, der ein Backup nach dest zurückspielt (dest="/" = Originalort)."""
+    sudo = "sudo -n " if use_sudo else ""
+    q = shlex.quote
+    if b["kind"] in ("snapshot", "mirror"):
+        return f"{sudo}rsync -aHAX --info=progress2 {q(b['path'].rstrip('/') + '/')} {q(dest.rstrip('/') + '/')}"
+    m = ARCHIVE_RE.match(os.path.basename(b["parts"][0]))
+    ext = m.group("ext") if m else ".tar"
+    dec = next((c[4] for c in COMPRESSORS.values() if c[1] == ext), None)
+    cmd = "cat " + " ".join(q(p) for p in b["parts"])
+    if b["encrypted"]:
+        cmd += f" | gpg --batch --quiet --pinentry-mode loopback --passphrase-file {q(passfile)} -d"
+    if dec:
+        cmd += " | " + " ".join(dec)
+    return cmd + f" | {sudo}tar -xpf - --xattrs --acls -C {q(dest)}"
+
+
+def run_backup_cli():
+    """tuxdex --backup: Backup ohne Fenster (für den Zeitplan)."""
+    cfg = backup_load()
+    if cfg["mode"] == "archive" and cfg.get("encrypt"):
+        print("Verschlüsselte Archive brauchen ein Passwort und laufen nur aus dem Fenster.")
+        return 2
+    targets = [t for t in cfg["targets"] if t not in cfg.get("disabled", []) and os.path.isdir(t)]
+    skipped = [t for t in cfg["targets"] if t not in targets and t not in cfg.get("disabled", [])]
+    for t in skipped:
+        print(f"Übersprungen (nicht angeschlossen): {t}")
+    if not targets:
+        print("Kein Ziel erreichbar – nichts zu tun.")
+        return 1
+    done = threading.Event()
+    res = {}
+    job = BackupJob(cfg, targets, lambda t, d: d.get("state") in ("ok", "error") and print(
+                    f"[{t}] {d.get('msg', '')}", flush=True),
+                    lambda s: print(s, end="", flush=True),
+                    lambda ok, s: (res.update(ok=ok, s=s), done.set()))
+    job.start()
+    done.wait()
+    print(res.get("s", ""))
+    if which("notify-send"):
+        subprocess.run(["notify-send", "-a", "Tuxdex", "-i", "tuxdex",
+                        "Backup fertig" if res.get("ok") else "Backup mit Problemen", res.get("s", "")])
+    return 0 if res.get("ok") else 1
+
+
+SYSTEMD_USER = os.path.join(os.path.expanduser("~/.config"), "systemd", "user")
+
+
+def backup_schedule_state():
+    """(aktiv, nächster Lauf als Text)"""
+    try:
+        r = subprocess.run(["systemctl", "--user", "list-timers", "tuxdex-backup.timer", "--no-legend"],
+                           capture_output=True, text=True, timeout=5).stdout.strip()
+        if not r:
+            return False, ""
+        return True, " ".join(r.split()[:4])
+    except Exception:
+        return False, ""
+
+
+def backup_schedule_set(when):
+    """when: off | daily | weekly. Gibt (ok, text) zurück."""
+    timer = os.path.join(SYSTEMD_USER, "tuxdex-backup.timer")
+    service = os.path.join(SYSTEMD_USER, "tuxdex-backup.service")
+    if when == "off":
+        subprocess.run(["systemctl", "--user", "disable", "--now", "tuxdex-backup.timer"], capture_output=True)
+        for f in (timer, service):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+        return True, "Zeitplan aus"
+    exe = "/usr/bin/tuxdex" if SYSTEM_INSTALL else f"/usr/bin/python3 {os.path.abspath(__file__)}"
+    os.makedirs(SYSTEMD_USER, exist_ok=True)
+    with open(service, "w") as f:
+        f.write("[Unit]\nDescription=Tuxdex Backup\n\n[Service]\nType=oneshot\n"
+                f"ExecStart={exe} --backup\nNice=10\nIOSchedulingClass=idle\n")
+    with open(timer, "w") as f:
+        f.write(f"[Unit]\nDescription=Tuxdex Backup ({when})\n\n[Timer]\n"
+                f"OnCalendar={'daily' if when == 'daily' else 'weekly'}\nPersistent=true\n"
+                "RandomizedDelaySec=15min\n\n[Install]\nWantedBy=timers.target\n")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    r = subprocess.run(["systemctl", "--user", "enable", "--now", "tuxdex-backup.timer"], capture_output=True,
+                       text=True)
+    return r.returncode == 0, (r.stderr.strip() or "Zeitplan aktiv")
+
+
+class BackupTab(Page):
+    MODES = [("snapshot", "Snapshots"), ("mirror", "Spiegel"), ("archive", "Archiv")]
+    MODE_HINT = {
+        "snapshot": "Jedes Backup ist eine eigene Version (Datum/Uhrzeit). Unveränderte Dateien werden nur "
+                    "verlinkt und kosten keinen Platz – wie Time Machine. Braucht ext4, btrfs, xfs …",
+        "mirror": "Eine 1:1-Kopie, die bei jedem Lauf nur die Änderungen überträgt. Schnell, aber nur ein Stand.",
+        "archive": "Eine einzige komprimierte Datei pro Backup, optional mit Passwort. Wird einmal gepackt und "
+                   "gleichzeitig auf alle Ziele geschrieben. Passt auf jeden Datenträger (FAT32: 4-GB-Teile).",
+    }
+    KEEP = [(3, "3"), (5, "5"), (10, "10"), (20, "20"), (50, "50"), (0, "alle")]
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.cfg = backup_load()
+        self.job = None
+        self.rows = {}
+
+        self.badge = StatusBadge("off", "…")
+        self.lay.addLayout(page_header("Backup", self.badge))
+
+        # ---------- Was ----------
+        src = Panel("Was sichern?", [Button("Home-Ordner", "ghost", lambda: self._add_source("~")),
+                                      Button("Systemeinstellungen (/etc)", "ghost", lambda: self._add_source("/etc")),
+                                      Button("Ordner hinzufügen …", "ghost", self._pick_source)])
+        self.src_list = QListWidget()
+        self.src_list.setMaximumHeight(110)
+        self.src_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        src.body.addWidget(self.src_list)
+        sb = QHBoxLayout()
+        sb.addWidget(Button("Ausgewählte entfernen", "ghost", self._del_source))
+        sb.addStretch(1)
+        self.size_lbl = Label("", "Muted")
+        sb.addWidget(self.size_lbl)
+        sb.addWidget(Button("Größe berechnen", "ghost", self._estimate))
+        src.body.addLayout(sb)
+        self.excl = QPlainTextEdit()
+        self.excl.setObjectName("Log")
+        self.excl.setFont(QFont(FONTS["mono"], 10))
+        self.excl.setMaximumHeight(80)
+        self.excl.setPlaceholderText("Ein Pfad pro Zeile, z. B. ~/.cache")
+        src.body.addLayout(Field("Nicht sichern (ein Pfad pro Zeile)", self.excl))
+        self.lay.addWidget(src)
+
+        # ---------- Wohin ----------
+        tg = Panel("Wohin? – alle angehakten Ziele werden gleichzeitig beschrieben")
+        self.tg_box = QVBoxLayout()
+        self.tg_box.setSpacing(6)
+        tg.body.addLayout(self.tg_box)
+        tb = QHBoxLayout()
+        tb.setSpacing(8)
+        self.drive_cb = QComboBox()
+        self.drive_cb.setMinimumWidth(320)
+        self.drive_cb.setMinimumHeight(38)
+        tb.addWidget(self.drive_cb, 1)
+        tb.addWidget(Button("Laufwerk hinzufügen", "ghost", self._add_drive))
+        tb.addWidget(Button("Ordner wählen …", "ghost", self._pick_target))
+        tb.addWidget(Button("↻", "icon", self.refresh_targets, "Laufwerke neu einlesen"))
+        tg.body.addLayout(tb)
+        tg.body.addWidget(Label(f"Backups liegen auf dem Ziel im Ordner {BACKUP_DIRNAME}/{backup_host()}/.",
+                                "Hint", wrap=True))
+        self.lay.addWidget(tg)
+
+        # ---------- Wie ----------
+        how = Panel("Wie?")
+        mrow = QHBoxLayout()
+        self.seg = Segmented([m[1] for m in self.MODES], self._mode_changed)
+        mrow.addWidget(self.seg)
+        mrow.addStretch(1)
+        how.body.addLayout(mrow)
+        self.mode_hint = Label("", "Hint", wrap=True)
+        how.body.addWidget(self.mode_hint)
+        opts = QGridLayout()
+        opts.setHorizontalSpacing(24)
+        opts.setVerticalSpacing(8)
+        self.cb_comp = QComboBox()
+        for k, t in (("zstd", "zstd – schnell, gut (empfohlen)"), ("xz", "xz – am kleinsten, langsam"),
+                     ("gzip", "gzip – überall lesbar"), ("none", "keine Kompression")):
+            if k == "none" or which(COMPRESSORS[k][0]):
+                self.cb_comp.addItem(t, k)
+        self.cb_level = QComboBox()
+        for k, t in (("schnell", "Schnell"), ("standard", "Ausgewogen"), ("stark", "Maximal (langsam)")):
+            self.cb_level.addItem(t, k)
+        self.cb_keep = QComboBox()
+        for k, t in self.KEEP:
+            self.cb_keep.addItem(t, k)
+        for cb in (self.cb_comp, self.cb_level, self.cb_keep):
+            cb.setMinimumHeight(38)
+        self.f_comp = QWidget()
+        self.f_comp.setLayout(Field("Kompression", self.cb_comp))
+        self.f_level = QWidget()
+        self.f_level.setLayout(Field("Stärke", self.cb_level))
+        self.f_keep = QWidget()
+        self.f_keep.setLayout(Field("Versionen behalten", self.cb_keep))
+        opts.addWidget(self.f_comp, 0, 0)
+        opts.addWidget(self.f_level, 0, 1)
+        opts.addWidget(self.f_keep, 0, 2)
+        opts.setColumnStretch(3, 1)
+        how.body.addLayout(opts)
+        self.name_edit = LineEdit(placeholder="leer = Standard, z. B. 2026-09-27_101500", mono=True)
+        self.name_edit.setMaximumWidth(420)
+        self.name_edit.textChanged.connect(self._name_preview)
+        self.name_edit.editingFinished.connect(self._save)
+        self.name_hint = Label("", "Hint", wrap=True)
+        self.name_hint.setTextFormat(Qt.RichText)
+        nb = QVBoxLayout()
+        nb.setContentsMargins(0, 0, 0, 0)
+        nb.addLayout(Field("Name der Sicherung", self.name_edit))
+        nb.addWidget(self.name_hint)
+        self.f_name = QWidget()
+        self.f_name.setLayout(nb)
+        how.body.addWidget(self.f_name)
+        self.cb_comp.currentIndexChanged.connect(lambda _=0: self._name_preview())
+        self.o_enc = QCheckBox("Mit Passwort verschlüsseln (AES-256, gpg)")
+        self.o_enc.setEnabled(which("gpg"))
+        self.pw1 = LineEdit(placeholder="Passwort")
+        self.pw2 = LineEdit(placeholder="Passwort wiederholen")
+        for pw in (self.pw1, self.pw2):
+            pw.setEchoMode(QLineEdit.Password)
+            pw.setMaximumWidth(260)
+        erow = QHBoxLayout()
+        erow.setSpacing(8)
+        erow.addWidget(self.o_enc)
+        erow.addWidget(self.pw1)
+        erow.addWidget(self.pw2)
+        erow.addStretch(1)
+        self.enc_row = QWidget()
+        self.enc_row.setLayout(erow)
+        erow.setContentsMargins(0, 0, 0, 0)
+        how.body.addWidget(self.enc_row)
+        self.o_enc.toggled.connect(lambda v: (self.pw1.setVisible(v), self.pw2.setVisible(v)))
+        self.o_verify = QCheckBox("Nach dem Schreiben prüfen (liest das Archiv zurück und vergleicht die Prüfsumme)")
+        self.o_delete = QCheckBox("Im Original gelöschte Dateien auch im Spiegel löschen")
+        self.o_root = QCheckBox("Mit root-Rechten (nötig für Systemordner wie /etc)")
+        for w in (self.o_verify, self.o_delete, self.o_root):
+            how.body.addWidget(w)
+        brow = QHBoxLayout()
+        self.b_start = Button("Backup starten", "primary", self.start)
+        self.b_cancel = Button("Abbrechen", "danger", self.cancel)
+        self.b_cancel.hide()
+        brow.addWidget(self.b_start)
+        brow.addWidget(self.b_cancel)
+        brow.addStretch(1)
+        how.body.addLayout(brow)
+        self.lay.addWidget(how)
+
+        # ---------- Fortschritt ----------
+        self.prog_panel = Panel("Fortschritt")
+        ph = QHBoxLayout()
+        ph.setSpacing(12)
+        self.run_badge = StatusBadge("off", "Bereit")
+        ph.addWidget(self.run_badge)
+        self.run_time = Label("", "Value")
+        ph.addWidget(self.run_time)
+        ph.addStretch(1)
+        self.prog_panel.body.addLayout(ph)
+        self.prog_box = QVBoxLayout()
+        self.prog_box.setSpacing(10)
+        self.prog_panel.body.addLayout(self.prog_box)
+        self.prog_panel.hide()
+        self.lay.addWidget(self.prog_panel)
+        self.run_timer = QTimer(self)
+        self.run_timer.timeout.connect(self._run_tick)
+
+        # ---------- Vorhandene Backups ----------
+        ex = Panel("Vorhandene Backups & Wiederherstellen")
+        er = QHBoxLayout()
+        er.setSpacing(8)
+        self.ex_target = QComboBox()
+        self.ex_target.setMinimumHeight(38)
+        self.ex_target.setMinimumWidth(320)
+        self.ex_target.currentIndexChanged.connect(lambda _=0: self.refresh_existing())
+        er.addWidget(self.ex_target, 1)
+        er.addWidget(Button("↻", "icon", self.refresh_existing, "Neu einlesen"))
+        ex.body.addLayout(er)
+        self.ex_table = QTableWidget(0, 4)
+        self.ex_table.setHorizontalHeaderLabels(["DATUM", "ART", "GRÖSSE", "DETAILS"])
+        self.ex_table.verticalHeader().setVisible(False)
+        self.ex_table.setShowGrid(False)
+        self.ex_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.ex_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.ex_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ex_table.horizontalHeader().setStretchLastSection(True)
+        self.ex_table.horizontalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        for i, w in enumerate((170, 110, 110)):
+            self.ex_table.setColumnWidth(i, w)
+        self.ex_table.setMinimumHeight(170)
+        ex.body.addWidget(self.ex_table)
+        xb = QHBoxLayout()
+        xb.setSpacing(8)
+        xb.addWidget(Button("Öffnen", "ghost", self.open_backup, "Im Dateimanager zeigen"))
+        xb.addWidget(Button("In Ordner wiederherstellen …", "primary", lambda: self.restore(False)))
+        xb.addWidget(Button("An Originalort zurückspielen …", "ghost", lambda: self.restore(True)))
+        xb.addStretch(1)
+        xb.addWidget(Button("Löschen", "danger", self.delete_backup))
+        ex.body.addLayout(xb)
+        self.lay.addWidget(ex)
+
+        # ---------- Zeitplan ----------
+        sc = Panel("Automatisch sichern")
+        sr = QHBoxLayout()
+        sr.setSpacing(8)
+        self.cb_sched = QComboBox()
+        self.cb_sched.setMinimumHeight(38)
+        for k, t in (("off", "Aus"), ("daily", "Täglich"), ("weekly", "Wöchentlich")):
+            self.cb_sched.addItem(t, k)
+        sr.addWidget(self.cb_sched)
+        sr.addWidget(Button("Übernehmen", "ghost", self.apply_schedule))
+        self.sched_lbl = Label("", "Muted", wrap=True)
+        sr.addWidget(self.sched_lbl, 1)
+        sc.body.addLayout(sr)
+        sc.body.addWidget(Label("Läuft im Hintergrund mit den Einstellungen oben – auch wenn Tuxdex geschlossen ist. "
+                                "Nicht angeschlossene Ziele werden übersprungen, verpasste Termine nachgeholt. "
+                                "Ohne root-Rechte und ohne Passwort-Verschlüsselung.", "Hint", wrap=True))
+        self.lay.addWidget(sc)
+
+        out = Panel("Ausgabe")
+        self.log = LogView(140)
+        out.body.addWidget(self.log)
+        self.lay.addWidget(out)
+
+        self._load_cfg()
+        self.refresh_targets()
+        self._refresh_badge()
+        self._refresh_schedule()
+
+    # ======================================================================
+    # Einstellungen
+    # ======================================================================
+
+    def _load_cfg(self):
+        c = self.cfg
+        self.src_list.clear()
+        for s in c["sources"]:
+            self.src_list.addItem(short_path(_expand(s)))
+        self.excl.setPlainText("\n".join(c["excludes"]))
+        idx = next((i for i, m in enumerate(self.MODES) if m[0] == c["mode"]), 0)
+        self.seg.set(idx)
+        for cb, val in ((self.cb_comp, c["compression"]), (self.cb_level, c["level"]), (self.cb_keep, c["keep"]),
+                        (self.cb_sched, c.get("schedule", "off"))):
+            i = cb.findData(val)
+            if i >= 0:
+                cb.setCurrentIndex(i)
+        self.name_edit.setText(c.get("name_pattern", ""))
+        self._name_preview()
+        self.o_verify.setChecked(c.get("verify", True))
+        self.o_delete.setChecked(c.get("delete", True))
+        self.o_root.setChecked(c.get("root", False))
+        self.o_enc.setChecked(c.get("encrypt", False) and which("gpg"))
+        self.pw1.setVisible(self.o_enc.isChecked())
+        self.pw2.setVisible(self.o_enc.isChecked())
+        self._mode_changed(idx, save=False)
+
+    def _collect(self):
+        c = self.cfg
+        home = os.path.expanduser("~")
+        c["sources"] = [self.src_list.item(i).text().replace("~", home, 1) if self.src_list.item(i).text()
+                        .startswith("~") else self.src_list.item(i).text() for i in range(self.src_list.count())]
+        c["excludes"] = [l.strip() for l in self.excl.toPlainText().splitlines() if l.strip()]
+        c["mode"] = self.mode
+        c["compression"] = self.cb_comp.currentData()
+        c["level"] = self.cb_level.currentData()
+        c["keep"] = self.cb_keep.currentData()
+        c["name_pattern"] = self.name_edit.text().strip()
+        c["verify"] = self.o_verify.isChecked()
+        c["delete"] = self.o_delete.isChecked()
+        c["root"] = self.o_root.isChecked()
+        c["encrypt"] = self.o_enc.isChecked()
+        c["disabled"] = [t for t, r in self.rows.items() if not r["cb"].isChecked()]
+        return c
+
+    def _save(self):
+        cfg = self._collect()
+        cfg["history"] = backup_load().get("history", [])
+        backup_save(cfg)
+
+    def _name_preview(self, *_):
+        from html import escape as html_escape
+        mode = getattr(self, "mode", "snapshot")
+        pat = self.name_edit.text().strip()
+        ex = backup_label(pat, datetime.now())
+        if mode == "archive" and not pat:
+            ex = f"{backup_host()}_{ex}"
+        ext = COMPRESSORS.get(self.cb_comp.currentData() or "zstd", COMPRESSORS["zstd"])[1] \
+            if mode == "archive" else ""
+        self.name_hint.setText(
+            f"Heute hieße die Sicherung: <b>{html_escape(ex + ext)}</b><br>"
+            "Platzhalter: <b>yyyy</b> Jahr · <b>mm</b> Monat · <b>dd</b> Tag · <b>HH</b> Stunde · <b>MM</b> Minute · "
+            "<b>SS</b> Sekunde – mit beliebigem Text davor oder dahinter, z. B. <b>Laptop_yyyy-mm-dd</b> oder "
+            "<b>yyyy-mm-dd vor Update</b>. Gibt es den Namen schon, hängt Tuxdex _2, _3 … an.")
+
+    def _mode_changed(self, idx, save=True):
+        self.mode = self.MODES[idx][0]
+        self.mode_hint.setText(self.MODE_HINT[self.mode])
+        arch = self.mode == "archive"
+        self.f_comp.setVisible(arch)
+        self.f_level.setVisible(arch)
+        self.enc_row.setVisible(arch)
+        self.o_verify.setVisible(arch)
+        self.f_keep.setVisible(self.mode != "mirror")
+        self.f_name.setVisible(self.mode != "mirror")
+        self._name_preview()
+        self.o_delete.setVisible(self.mode == "mirror")
+        self._update_target_notes()
+
+    def _add_source(self, p):
+        p = short_path(_expand(p))
+        if not any(self.src_list.item(i).text() == p for i in range(self.src_list.count())):
+            self.src_list.addItem(p)
+            if p == "/etc":
+                self.o_root.setChecked(True)
+        self._save()
+
+    def _pick_source(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Ordner sichern", os.path.expanduser("~"))
+        if d:
+            self._add_source(d)
+
+    def _del_source(self):
+        for it in self.src_list.selectedItems():
+            self.src_list.takeItem(self.src_list.row(it))
+        self._save()
+
+    def _estimate(self):
+        c = self._collect()
+        use_sudo = c["root"] and self.app.priv.is_authenticated_nonblocking()
+        self.size_lbl.setText("Berechne …")
+        srcs = [_expand(s) for s in c["sources"] if os.path.exists(_expand(s))]
+        exc = [_expand(e) for e in c["excludes"]]
+
+        def worker():
+            n = estimate_size(srcs, exc, use_sudo) if srcs else 0
+            ui(lambda: self.size_lbl.setText(f"Umfang: {fmt_bytes(n)}"
+                                             + ("" if use_sudo or not c["root"] else " (ohne root – evtl. zu wenig)")))
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ======================================================================
+    # Ziele
+    # ======================================================================
+
+    def refresh_targets(self):
+        # Laufwerke zur Auswahl: alle eingehängten echten Datenträger außer Systempartitionen
+        self.drive_cb.clear()
+        try:
+            out = subprocess.run(["df", "-B1", "--output=source,fstype,avail,target", "-x", "tmpfs", "-x",
+                                  "devtmpfs", "-x", "squashfs", "-x", "overlay", "-x", "efivarfs"],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            out = ""
+        seen = set()
+        for line in out.splitlines()[1:]:
+            p = line.split(None, 3)
+            if len(p) < 4 or not p[0].startswith("/dev/") or p[0] in seen:
+                continue
+            seen.add(p[0])
+            tgt = p[3]
+            if tgt in SYSTEM_MOUNTS or tgt.startswith(("/boot", "/efi")):
+                continue
+            self.drive_cb.addItem(f"{short_path(tgt)}  ·  {p[1]}  ·  {fmt_bytes(int(p[2]))} frei", tgt)
+        if not self.drive_cb.count():
+            self.drive_cb.addItem("Kein externes Laufwerk eingehängt – Stick einstecken oder Ordner wählen", None)
+        self._build_target_rows()
+
+    def _build_target_rows(self):
+        while self.tg_box.count():
+            it = self.tg_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.rows = {}
+        if not self.cfg["targets"]:
+            self.tg_box.addWidget(Label("Noch kein Ziel – unten ein Laufwerk oder einen Ordner hinzufügen.", "Muted"))
+        for t in self.cfg["targets"]:
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(12)
+            cb = QCheckBox(short_path(t))
+            cb.setChecked(t not in self.cfg.get("disabled", []))
+            cb.toggled.connect(lambda _=False: self._save())
+            h.addWidget(cb)
+            info = Label("", "Hint", wrap=True)
+            h.addWidget(info, 1)
+            h.addWidget(Button("Entfernen", "ghost", lambda _=False, t=t: self._del_target(t)))
+            self.tg_box.addWidget(w)
+            self.rows[t] = {"cb": cb, "info": info}
+        self._update_target_notes()
+        prev = self.ex_target.currentData()
+        self.ex_target.blockSignals(True)
+        self.ex_target.clear()
+        for t in self.cfg["targets"]:
+            self.ex_target.addItem(short_path(t), t)
+        i = self.ex_target.findData(prev)
+        self.ex_target.setCurrentIndex(max(0, i))
+        self.ex_target.blockSignals(False)
+        self.refresh_existing()
+
+    def _update_target_notes(self):
+        for t, r in self.rows.items():
+            fstype, free, mnt = fs_info(t)
+            if fstype is None:
+                r["info"].setText("nicht angeschlossen – wird übersprungen")
+                r["cb"].setEnabled(False)
+                continue
+            r["cb"].setEnabled(True)
+            note = f"{fstype} · {fmt_bytes(free)} frei"
+            if self.mode == "snapshot" and fstype not in LINUX_FS:
+                note += " · ⚠ keine Snapshots auf diesem Dateisystem – „Archiv“ wählen"
+            elif self.mode == "archive" and fstype in FAT_FS:
+                note += " · FAT32: Archiv wird in 4-GB-Teile geteilt"
+            elif self.mode != "archive" and fstype not in LINUX_FS:
+                note += " · ohne Linux-Rechte (Besitzer/Rechte gehen verloren)"
+            r["info"].setText(note)
+
+    def _add_target(self, path):
+        if not path:
+            return
+        path = os.path.normpath(path)
+        srcs = [_expand(s) for s in self._collect()["sources"]]
+        if any(path == s for s in srcs):
+            show_warning(self, "Ungültiges Ziel", "Das Ziel darf nicht gleich einer Quelle sein.")
+            return
+        if path not in self.cfg["targets"]:
+            self.cfg["targets"].append(path)
+            self._save()
+            self._build_target_rows()
+
+    def _add_drive(self):
+        self._add_target(self.drive_cb.currentData())
+
+    def _pick_target(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Backup-Ziel wählen", "/run/media")
+        if d:
+            self._add_target(d)
+
+    def _del_target(self, t):
+        if t in self.cfg["targets"]:
+            self.cfg["targets"].remove(t)
+            self._save()
+            self._build_target_rows()
+
+    # ======================================================================
+    # Backup ausführen
+    # ======================================================================
+
+    def start(self):
+        if self.job:
+            return
+        cfg = self._collect()
+        targets = [t for t, r in self.rows.items() if r["cb"].isChecked() and r["cb"].isEnabled()]
+        if not cfg["sources"]:
+            show_info(self, "Nichts ausgewählt", "Bitte mindestens einen Ordner zum Sichern hinzufügen.")
+            return
+        if not targets:
+            show_info(self, "Kein Ziel", "Bitte mindestens ein angeschlossenes Ziel anhaken.")
+            return
+        if cfg["mode"] == "snapshot":
+            bad = [t for t in targets if fs_info(t)[0] not in LINUX_FS]
+            if bad:
+                show_warning(self, "Snapshots nicht möglich",
+                             "Diese Ziele haben kein Linux-Dateisystem:\n" + "\n".join(short_path(b) for b in bad)
+                             + "\n\nFür sie „Archiv“ oder „Spiegel“ verwenden – oder abhaken.")
+                return
+        pw = None
+        if cfg["mode"] == "archive" and cfg["encrypt"]:
+            pw = self.pw1.text()
+            if len(pw) < 8:
+                show_warning(self, "Passwort", "Das Passwort muss mindestens 8 Zeichen haben.")
+                return
+            if pw != self.pw2.text():
+                show_warning(self, "Passwort", "Die Passwörter stimmen nicht überein.")
+                return
+        use_sudo = cfg["root"]
+        if use_sudo and not self.app.priv.ensure(self):
+            return
+        self._save()
+        self.log.set_text("")
+        # Fortschritts-Zeilen je Ziel
+        while self.prog_box.count():
+            it = self.prog_box.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.prog = {}
+        for t in targets:
+            w = QWidget()
+            v = QVBoxLayout(w)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(4)
+            hd = QHBoxLayout()
+            hd.setSpacing(10)
+            badge = StatusBadge("info", "Wartet")
+            hd.addWidget(badge)
+            hd.addWidget(Label(short_path(t), "PanelTitle"))
+            hd.addStretch(1)
+            eta = Label("", "Muted")
+            hd.addWidget(eta)
+            v.addLayout(hd)
+            bar = ProgressBar()
+            v.addWidget(bar)
+            det = Label("", "Hint", wrap=True)
+            v.addWidget(det)
+            self.prog_box.addWidget(w)
+            self.prog[t] = {"badge": badge, "bar": bar, "det": det, "eta": eta}
+        self.prog_panel.show()
+        self.run_badge.set("ok", "Läuft")
+        self.run_started = time.time()
+        self.run_timer.start(1000)
+        self._run_tick()
+        self.b_start.hide()
+        self.b_cancel.show()
+        self.job = BackupJob(dict(cfg), targets,
+                             lambda t, d: ui(lambda: self._on_progress(t, d)),
+                             lambda s: ui(lambda: self.log.append_text(s)),
+                             lambda ok, s: ui(lambda: self._on_done(ok, s)),
+                             passphrase=pw, use_sudo=use_sudo)
+        self.job.start()
+        QTimer.singleShot(0, lambda: self.ensureWidgetVisible(self.prog_panel, 0, 40))
+
+    def cancel(self):
+        if self.job and ask_confirm(self, "Backup abbrechen", "Laufendes Backup abbrechen? Unfertige Dateien "
+                                    "werden entfernt, vorhandene Backups bleiben erhalten.", "Abbrechen",
+                                    danger=True):
+            self.job.cancel()
+
+    def _run_tick(self):
+        el = int(time.time() - self.run_started)
+        self.run_time.setText(f"{el // 3600:d}:{el // 60 % 60:02d}:{el % 60:02d}")
+
+    def _on_progress(self, t, d):
+        p = self.prog.get(t)
+        if not p:
+            return
+        st = d.get("state")
+        if st == "ok":
+            p["badge"].set("ok", "Fertig")
+            p["bar"].set(100, "100 %")
+            p["eta"].setText("")
+        elif st == "error":
+            p["badge"].set("danger", "Fehler")
+            p["eta"].setText("")
+        elif st == "wait":
+            p["badge"].set("info", "Vorbereiten")
+            p["bar"].set(None, "…")
+        elif st == "run":
+            p["badge"].set("ok", "Läuft")
+            if "pct" in d:
+                p["bar"].set(d["pct"], f"{d['pct']} %")
+            if d.get("eta") and d.get("pct", 0) < 100:
+                p["eta"].setText(f"Restzeit ca. {d['eta']}")
+        if "msg" in d:
+            p["det"].setText(d["msg"])
+        elif "done" in d:
+            speed = re.sub(r"(\d)([kKMGT]?B/s)$", r"\1 \2", d.get("speed", ""))
+            txt = f"{fmt_bytes(d['done'])} / {fmt_bytes(self.job.total if self.job else 0)} · {speed}"
+            if d.get("written") is not None:
+                txt += f" · geschrieben (komprimiert): {fmt_bytes(d['written'])}"
+            p["det"].setText(txt)
+
+    def _on_done(self, ok, summary):
+        self.run_timer.stop()
+        self._run_tick()
+        self.job = None
+        self.b_cancel.hide()
+        self.b_start.show()
+        self.run_badge.set("ok" if ok else "warn", "Fertig" if ok else summary.split(" ·")[0])
+        self.log.append_text(f"\n{summary}\n")
+        self.pw1.clear()
+        self.pw2.clear()
+        self._refresh_badge()
+        self._update_target_notes()
+        self.refresh_existing()
+
+    def _refresh_badge(self):
+        h = backup_load().get("history", [])
+        if not h:
+            self.badge.set("warn", "Noch kein Backup")
+            return
+        last = h[0]
+        days = (time.time() - last["at"]) / 86400
+        txt = f"Letztes Backup {fmt_ago(last['at'])}"
+        self.badge.set("ok" if days < 8 and last.get("ok") else "warn", txt)
+
+    # ======================================================================
+    # Vorhandene Backups
+    # ======================================================================
+
+    def refresh_existing(self):
+        t = self.ex_target.currentData()
+        self.ex_table.setRowCount(0)
+        self.existing = []
+        if not t or not os.path.isdir(t):
+            return
+        self.existing = list_backups(t)
+        kinds = {"snapshot": "Snapshot", "mirror": "Spiegel", "archive": "Archiv"}
+        self.ex_table.setRowCount(len(self.existing))
+        for i, b in enumerate(self.existing):
+            det = os.path.basename(b["name"]) if b["kind"] == "archive" else short_path(b["path"])
+            if b["encrypted"]:
+                det += " · 🔒 verschlüsselt"
+            if len(b["parts"]) > 1:
+                det += f" · {len(b['parts'])} Teile"
+            for j, v in enumerate((b["when"].strftime("%d.%m.%Y %H:%M"), kinds[b["kind"]],
+                                   fmt_bytes(b["size"]) if b["size"] is not None else "—", det)):
+                self.ex_table.setItem(i, j, QTableWidgetItem(v))
+
+    def _selected(self):
+        r = self.ex_table.currentRow()
+        if r < 0 or r >= len(getattr(self, "existing", [])):
+            show_info(self, "Nichts ausgewählt", "Bitte zuerst ein Backup in der Liste auswählen.")
+            return None
+        return self.existing[r]
+
+    def open_backup(self):
+        b = self._selected()
+        if b and which("xdg-open"):
+            p = b["path"] if b["kind"] != "archive" else os.path.dirname(b["path"])
+            subprocess.Popen(["xdg-open", p], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def restore(self, original):
+        b = self._selected()
+        if not b or self.job:
+            return
+        if original:
+            dest = "/"
+            if not ask_confirm(self, "An Originalort zurückspielen",
+                               f"Backup vom {b['when']:%d.%m.%Y %H:%M} an den ursprünglichen Ort zurückschreiben?\n\n"
+                               "Gleichnamige Dateien werden durch den Stand aus dem Backup ersetzt. "
+                               "Dateien, die es im Backup nicht gibt, bleiben erhalten.", "Zurückspielen",
+                               danger=True):
+                return
+        else:
+            from PySide6.QtWidgets import QFileDialog
+            dest = QFileDialog.getExistingDirectory(self, "Wiederherstellen nach …", os.path.expanduser("~"))
+            if not dest:
+                return
+            dest = os.path.join(dest, f"Wiederhergestellt_{b['when']:%Y-%m-%d_%H%M}")
+            os.makedirs(dest, exist_ok=True)
+        passfile = None
+        if b["encrypted"]:
+            dlg = PasswordDialog(self, "Archiv-Passwort", "Passwort des Archivs",
+                                 "Das Backup ist verschlüsselt. Das Passwort wird nicht gespeichert.",
+                                 "Wiederherstellen")
+            pw = dlg.entry.text() if dlg.exec() == QDialog.Accepted else ""
+            if not pw:
+                return
+            fd, passfile = tempfile.mkstemp(prefix="tuxdex-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+            os.write(fd, pw.encode())
+            os.close(fd)
+        use_sudo = original or self.o_root.isChecked()
+        if use_sudo and not self.app.priv.ensure(self):
+            if passfile:
+                os.remove(passfile)
+            return
+        script = "set -o pipefail; " + restore_command(b, dest, use_sudo, passfile)
+        self.log.set_text(f"$ {script.replace(passfile or '§', '<passwort>')}\n")
+
+        def done(rc):
+            if passfile:
+                try:
+                    os.remove(passfile)
+                except OSError:
+                    pass
+            self.log.append_text(f"\n[Exit-Code {rc}]\n")
+            if rc == 0:
+                self.log.append_text(f"Wiederhergestellt nach {short_path(dest)}\n")
+        run_streaming(["bash", "-c", script], self.log, clear_first=False, on_done=done)
+
+    def delete_backup(self):
+        b = self._selected()
+        if not b:
+            return
+        if not ask_confirm(self, "Backup löschen", f"Backup vom {b['when']:%d.%m.%Y %H:%M} endgültig löschen?",
+                           "Löschen", danger=True):
+            return
+        if b["kind"] == "archive":
+            for p in b["parts"] + [b["parts"][0].split(".part")[0] + ".sha256"]:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            self.refresh_existing()
+            return
+        # Snapshots enthalten ggf. root-Dateien → mit sudo, falls angemeldet
+        use_sudo = self.app.priv.is_authenticated_nonblocking()
+        self.log.set_text(f"$ rm -rf {short_path(b['path'])}\n")
+        run_streaming(["rm", "-rf", "--", b["path"]], self.log, needs_sudo=use_sudo, clear_first=False,
+                      on_done=lambda rc: (self.log.append_text(f"[Exit-Code {rc}]\n"), self.refresh_existing()))
+
+    # ======================================================================
+    # Zeitplan
+    # ======================================================================
+
+    def _refresh_schedule(self):
+        on, nxt = backup_schedule_state()
+        self.sched_lbl.setText(f"Aktiv · nächster Lauf: {nxt}" if on else "Kein Zeitplan aktiv")
+
+    def apply_schedule(self):
+        when = self.cb_sched.currentData()
+        cfg = self._collect()
+        if when != "off":
+            if cfg["mode"] == "archive" and cfg["encrypt"]:
+                show_warning(self, "Zeitplan", "Verschlüsselte Archive brauchen das Passwort – das wird nicht "
+                                               "gespeichert. Für den Zeitplan Snapshots oder unverschlüsselte "
+                                               "Archive verwenden.")
+                return
+            if not cfg["targets"]:
+                show_info(self, "Zeitplan", "Bitte zuerst ein Ziel hinzufügen.")
+                return
+        cfg["schedule"] = when
+        self._save()
+        ok, txt = backup_schedule_set(when)
+        if not ok:
+            show_warning(self, "Zeitplan", txt)
+        self._refresh_schedule()
+
+
 SETTINGS_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json")
 BUILD_DIR = os.path.join(os.path.expanduser("~/.cache"), "tuxdex", "build")
 
@@ -7578,6 +11813,7 @@ class UpdatePanel(QWidget):
     def _offer_update(self, ver, changes_html):
         """Beim Start: neue Version in einem Fenster anbieten."""
         box = QMessageBox(self.window())
+        set_msg_icon(box, QMessageBox.Information)
         box.setWindowTitle("Update verfügbar")
         box.setTextFormat(Qt.RichText)
         box.setText(f"<b>Tuxdex {ver} ist verfügbar</b> – installiert ist {APP_VERSION}.")
@@ -7587,6 +11823,7 @@ class UpdatePanel(QWidget):
         now = box.addButton("Jetzt aktualisieren", QMessageBox.AcceptRole)
         now.setProperty("variant", "primary")
         box.setDefaultButton(now)
+        style_msg_box(box)
         box.exec()
         if box.clickedButton() is now:
             self.app.open_settings()
@@ -7914,6 +12151,7 @@ class SettingsPage(Page):
             "flatpak": "Flatpak-Apps und ihre Rechte (Dateien, Geräte, Netzwerk …) wie mit Flatseal",
             "disks": "Laufwerke einhängen, umbenennen, prüfen, formatieren, sicher entfernen",
             "storage": "Belegung je Festplatte, größte Ordner, Aufräumen",
+            "backup": "Snapshots, Spiegel und komprimierte Archive – auf mehrere Ziele gleichzeitig",
             "swap": "Fallback-Speicher (Swapfile) und Swappiness",
             "tasks": "Prozesse, Leistung, Hardware- und Netzwerkinfos",
             "antivirus": "ClamAV: Signaturen, Scans, Quarantäne",
@@ -8108,20 +12346,24 @@ class MainWindow(QWidget):
         sl.addWidget(Label(f"Version {APP_VERSION}", "StatusText"))
         root.addWidget(sb)
 
-        pages = {
+        # Tabs werden erst beim ersten Öffnen gebaut (spart RAM und Startzeit);
+        # bis dahin steht ein leerer Platzhalter im Stack, damit die Indizes stimmen.
+        self.page_classes = {
             "update": UpdaterTab, "software": SoftwareTab, "flatpak": FlatpakTab, "swap": SwapTab,
-            "disks": DisksTab, "storage": StorageTab, "tasks": TaskTab, "antivirus": AntivirusTab,
+            "disks": DisksTab, "storage": StorageTab, "backup": BackupTab, "tasks": TaskTab, "antivirus": AntivirusTab,
             "security": SecurityTab, "users": UsersTab,
         }
         self.tabs = []
         self.pages = {}
+        self._used = {}
+        self._last_tab_key = None
         for i, (key, label, color) in enumerate(MODULES):
-            self.pages[key] = pages[key](self)
-            self.stack.addWidget(self.pages[key])
+            self.stack.addWidget(QWidget())
             t = TabButton(label, color, lambda i=i: self.select(i))
             tb.addWidget(t)
             self.tabs.append(t)
         tb.addStretch(1)
+        self.page("update")          # prüft beim Start auf System-Updates
         self.show_sys_updates(*self._sys_updates)
         self.settings_page = SettingsPage(self)
         self.stack.addWidget(self.settings_page)
@@ -8137,6 +12379,10 @@ class MainWindow(QWidget):
         self._dev_timer = QTimer(self)
         self._dev_timer.timeout.connect(self._check_devices)
         self._dev_timer.start(2000)
+        self._trim_timer = QTimer(self)
+        self._trim_timer.timeout.connect(self._housekeeping)
+        self._trim_timer.start(60000)
+        QTimer.singleShot(4000, self._check_orphans)
 
         if kernel_modules_missing():
             self.set_status("Kernel wurde aktualisiert – bitte neu starten, damit z. B. USB-Sticks erkannt werden.")
@@ -8178,8 +12424,56 @@ class MainWindow(QWidget):
             mounts = ""
         return tuple(blocks), tuple(sizes), mounts
 
+    def page(self, key):
+        """Tab holen – beim ersten Aufruf bauen und den Platzhalter ersetzen."""
+        if key not in self.pages:
+            idx = [m[0] for m in MODULES].index(key)
+            w = self.page_classes[key](self)
+            old = self.stack.widget(idx)
+            cur = self.stack.currentIndex()
+            self.stack.insertWidget(idx, w)
+            self.stack.removeWidget(old)
+            old.deleteLater()
+            self.stack.setCurrentIndex(cur)
+            self.pages[key] = w
+            QTimer.singleShot(3000, trim_memory)
+        return self.pages[key]
+
+    UNLOAD_AFTER = 300          # Sekunden unbenutzt, bevor ein Tab wieder abgebaut wird
+    KEEP_LOADED = {"update"}    # liefert die Update-Anzeige unten rechts
+
+    def _page_busy(self, w):
+        if any(r.log is not None and w.isAncestorOf(r.log) for r in list(_ACTIVE_RUNS)):
+            return True
+        if any(getattr(w, a, False) for a in ("busy", "loading", "cl_running", "checking")):
+            return True
+        if getattr(w, "job", None) is not None or getattr(w, "run", None) is not None:
+            return True
+        sc = getattr(w, "sc", None)
+        return bool(sc) and not sc.get("done", True)
+
+    def _housekeeping(self):
+        """Jede Minute: Tabs abbauen, die lange nicht benutzt wurden und nichts tun – dann Speicher freigeben."""
+        now = time.time()
+        cur = MODULES[self.stack.currentIndex()][0] if self.stack.currentIndex() < len(MODULES) else None
+        for key in list(self.pages):
+            if key == cur or key in self.KEEP_LOADED:
+                continue
+            if now - self._used.get(key, now) < self.UNLOAD_AFTER or self._page_busy(self.pages[key]):
+                continue
+            w = self.pages.pop(key)
+            idx = [m[0] for m in MODULES].index(key)
+            ph = QWidget()
+            cur_idx = self.stack.currentIndex()
+            self.stack.insertWidget(idx, ph)
+            self.stack.removeWidget(w)
+            self.stack.setCurrentIndex(cur_idx)
+            w.deleteLater()
+        QTimer.singleShot(500, trim_memory)
+
     def _check_devices(self):
-        self.pages["disks"]._check_usb()
+        if "disks" in self.pages:
+            self.pages["disks"]._check_usb()
         state = self._device_state()
         if state == self._dev_state:
             return
@@ -8188,8 +12482,9 @@ class MainWindow(QWidget):
         added = [b for b in state[0] if b not in old_blocks and not b.startswith(("loop", "zram", "ram"))]
         if added:
             self.set_status("Neues Laufwerk erkannt: " + ", ".join("/dev/" + b for b in added))
-        self.pages["disks"].refresh()
-        self.pages["storage"].refresh_fs()
+        for key, fn in (("disks", "refresh"), ("storage", "refresh_fs")):
+            if key in self.pages:
+                getattr(self.pages[key], fn)()
 
     def show_sys_updates(self, n, important):
         """Anzahl offener System-Updates: Hinweis unten rechts + Zahl am Tab „Updates“."""
@@ -8214,6 +12509,44 @@ class MainWindow(QWidget):
         else:
             self.upd_hint.hide()
 
+    def closeEvent(self, e):
+        """Beim Schließen laufende Scans/Backups/Befehle nicht als Waisen zurücklassen."""
+        busy = running_children()
+        if busy:
+            names = sorted({os.path.basename(str((p.args if isinstance(p.args, list) else [p.args])
+                                                  [2 if str(p.args[0]).endswith("sudo") else 0]))
+                            for p in busy})
+            if not ask_confirm(self, "Tuxdex beenden", "Es läuft noch: " + ", ".join(names) + ".\n\n"
+                               "Beim Schließen wird das abgebrochen.", "Beenden", danger=True):
+                e.ignore()
+                return
+        stop_children()
+        e.accept()
+
+    def _check_orphans(self):
+        def worker():
+            o = orphaned_jobs()
+            if o:
+                ui(lambda: self._offer_kill(o))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _offer_kill(self, orphans):
+        lines = [f"• {n} (PID {pid}) · {fmt_bytes(rss)} RAM · läuft seit {int(age) // 3600}:{int(age) // 60 % 60:02d} h"
+                 for pid, n, rss, age in orphans]
+        if not ask_confirm(self, "Alter Vorgang läuft noch",
+                           "Aus einer früheren Tuxdex-Sitzung laufen noch im Hintergrund:\n\n" + "\n".join(lines)
+                           + "\n\nSie belegen Speicher und Rechenzeit. Jetzt beenden?", "Beenden", danger=True):
+            return
+        pids = [str(o[0]) for o in orphans]
+        subprocess.run(["kill", "--"] + pids, capture_output=True)
+        time.sleep(0.3)
+        left = [p for p in pids if os.path.exists(f"/proc/{p}")]
+        if left:
+            if not self.priv.ensure(self):
+                return
+            subprocess.run(["sudo", "-n", "kill", "--"] + left, capture_output=True)
+        self.set_status(f"{len(orphans)} alte{'r' if len(orphans) == 1 else ''} Vorgang/Vorgänge beendet.")
+
     def restart(self):
         """Tuxdex neu starten (nach einem Update)."""
         exe = "/usr/bin/tuxdex" if SYSTEM_INSTALL and os.path.exists("/usr/bin/tuxdex") else None
@@ -8237,8 +12570,13 @@ class MainWindow(QWidget):
     def select(self, idx):
         self._last_tab = idx
         self.gear.setChecked(False)
+        new = MODULES[idx][0] not in self.pages
+        if self._last_tab_key and self._last_tab_key != MODULES[idx][0]:
+            self._used[self._last_tab_key] = time.time()      # verlassen → ab jetzt „unbenutzt“
+        self._last_tab_key = MODULES[idx][0]
+        self.page(MODULES[idx][0])
         self.stack.setCurrentIndex(idx)
-        if MODULES[idx][0] == "disks":
+        if MODULES[idx][0] == "disks" and not new:
             self.pages["disks"].refresh()
         for i, t in enumerate(self.tabs):
             t.set_selected(i == idx)
@@ -8267,6 +12605,8 @@ class MainWindow(QWidget):
 
 def main():
     global _INVOKER
+    if "--backup" in sys.argv:
+        return run_backup_cli()
     app = QApplication(sys.argv)
     app.setApplicationName("Tuxdex")
     app.setApplicationDisplayName("Tuxdex")
@@ -8277,6 +12617,7 @@ def main():
     install_desktop_entry()
     _INVOKER = _Invoker()
     apply_theme(app)
+    app.aboutToQuit.connect(stop_children)      # auch beim Neustart nach einem Update
     win = MainWindow()
     win.setFocusPolicy(Qt.ClickFocus)
     win.show()

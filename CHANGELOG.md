@@ -1,5 +1,91 @@
 # Changelog
 
+## 1.0.0
+Erstes offizielles Release. Die Versionszählung beginnt neu – die Einträge darunter sind die Vorabversionen bis 1.6.0-beta.12.
+
+- **11 Module** in einem Fenster: Updates, Software, Flatpak (Rechte per Schalter), Datenträger, Speicher, Backup, Swap, Taskmanager, Antivirus (ClamAV), Sicherheit, Benutzer.
+- **Backup**: Snapshots, Spiegel oder Archive auf mehrere Ziele gleichzeitig, eigene Namen mit Datum, Zeitplan, Wiederherstellen, Paketliste im Backup.
+- **Taskmanager**: Prozesse nach Programm gruppiert, Leistungs-Kacheln mit Details per Klick (CPU, RAM, Datenträger, Grafik, Netzwerk, Akku, Lüfter), Autostart und Bootzeit.
+- **Sicherheit**: Sicherheits-Check, Checkliste für Wartung, Datenschutz & Performance, DNS-Leak-Test, offene Ports, Mullvad VPN, Firewall.
+- Durchgehend im Tuxdex-Design, auch in allen Pop-ups; eigene Farbpalette unabhängig vom Desktop-Theme.
+- Hinweis für Installationen vor 1.0.0: Weil die Zählung neu beginnt, bietet der eingebaute Updater 1.0.0 nicht von selbst an. Einmal neu installieren (siehe README → Installation); danach funktionieren Updates wieder normal. Das PKGBUILD setzt `epoch=1`, damit pacman 1.0.0 nicht als Downgrade ansieht.
+
+## 1.6.0-beta.12
+- Speicher → Typische Platzfresser & Aufräumen: **(i) neben jedem Eintrag** – beim Drüberfahren oder per Klick steht, was dort liegt, welcher Befehl beim Knopf läuft (z. B. `paccache -rk2`, `pacman -Rns`, `journalctl --vacuum-size=200M`) und was erhalten bleibt. Bei „nur Anzeige“ steht, wie man selbst aufräumt.
+
+## 1.6.0-beta.11
+- Dialoge unter KDE: Texte stehen nicht mehr auf dunkleren Kästen. Tuxdex setzt jetzt eine eigene Farbpalette, statt die Fensterfarben des Desktop-Themes (Breeze) zu übernehmen – gilt auch für Menüs, Tooltips und Auswahlfarben.
+
+## 1.6.0-beta.10
+- Sicherheit: neue **Checkliste für Wartung, Datenschutz & Performance** – prüft automatisch und bietet, wo sinnvoll, einen Knopf zum Beheben:
+  - **Pakete & Updates**: Paketsignaturen (SigLevel), Alter der Mirrorliste (reflector), Fehler/Warnungen beim letzten Update in pacman.log, Neustart nach Kernel-Update.
+  - **Zugriff**: sudo-Regeln mit NOPASSWD, riskante Gruppen (docker, disk …), Bildschirmsperre (KDE/GNOME), AppArmor, usbguard.
+  - **Datenschutz**: Größe des System-Protokolls (auf 500 MB / 1 Monat begrenzen), Core Dumps abschalten, Passwörter/Tokens im Shell-Verlauf (nur gezählt), Telemetrie in VS Code.
+  - **Kernel**: ASLR; der Kernel-Schutz setzt jetzt auch `dmesg_restrict` und `kptr_restrict`.
+  - **Backup**: Alter des letzten Backups, ob /etc und Home gesichert werden, Paketliste, Btrfs-Snapshots.
+  - **Performance**: TRIM-Timer, I/O-Scheduler je Laufwerkstyp, Swap/Swappiness, CPU-Regler, /tmp als tmpfs.
+  - **Laufende Wartung**: Fehler im System-Protokoll seit dem Start, fehlgeschlagene Dienste, NTP, Reste alter Kernel-Module, verwaiste Pakete und Paket-Cache.
+- Backup: speichert vor jedem Lauf die **Paketliste** (`~/.config/tuxdex/pakete.txt`, AUR getrennt) – Neuinstallation mit `pacman -S --needed - < pakete.txt`.
+
+## 1.6.0-beta.9
+- Backup: **Eigener Name für Sicherungen** mit Datum – z. B. `Laptop_yyyy-mm-dd` → `Laptop_2026-09-27`. Platzhalter `yyyy mm dd HH MM SS`, Text davor oder danach frei wählbar; Vorschau direkt unter dem Feld. Gilt für Snapshots und Archive, auch für geplante Backups. Doppelte Namen bekommen `_2`, `_3` …
+- Sortieren und Aufräumen alter Versionen nach dem echten Sicherungszeitpunkt, auch bei frei gewählten Namen.
+- Anleitung in der README unter „Backups benennen“.
+
+## 1.6.0-beta.8
+- Mullvad: Kontonummer ist jetzt **komplett verdeckt**; das Auge daneben blendet sie ein und wieder aus.
+- Backup → Fortschritt: Statusfeld je Ziel passt sich dem Text an (war fest 120 px breit); Tempo lesbar als „16.45 MB/s“.
+
+## 1.6.0-beta.7
+- Taskmanager → Leistung: **Kacheln anklicken für Details** (live, alle 2 s; erneut klicken oder „Schließen“ blendet aus):
+  - **Prozessor**: Geschwindigkeit, Temperatur, Betriebszeit, Prozesse/Threads/Handles, Last; Modell, Basis- und Maximaltakt, Sockel, Kerne, virtuelle Prozessoren, Virtualisierung (KVM / AMD-V / VT-x), virtuelle Maschine, L1/L2/L3-Cache, CPUfreq-Treiber und -Regler, Energiemodus, Boost.
+  - **Arbeitsspeicher**: in Verwendung, verfügbar, zugesichert, im Cache, Swap, zram komprimiert/Ersparnis; Takt (MT/s), belegte Steckplätze, Formfaktor, Typ (z. B. LPDDR5).
+  - **Datenträger** (Auswahl je Laufwerk): Lese-/Schreibtempo, aktive Zeit, Antwortzeit, Summen seit Start, Temperatur; Modell, Kapazität, formatiert, Systemdatenträger, Typ, WWN, Seriennummer, Partitionen mit Belegung.
+  - **Grafik** (Auswahl je Karte): Auslastung, Takt, Leistungsaufnahme, VRAM, Speichertakt, Video kodieren/dekodieren (NVIDIA), Temperatur, Lüfter; Treiber, OpenGL-/Vulkan-Version, PCIe-Geschwindigkeit, PCI-Adresse.
+  - **Netzwerk** (je Schnittstelle), **Akku** (Zyklen, Zustand, Spannung, Ladegrenze), **Swap** (Geräte, Priorität, Swappiness) und **System & Lüfter** (Drehzahlen aller Lüfter, Temperaturen, Kernel, Startzeit).
+- Alles ohne root; Werte, die das System nicht meldet, stehen als „—“.
+
+## 1.6.0-beta.6
+- **Pop-ups überarbeitet**: kein schwarz hinterlegter Text mehr in Hinweis-, Warn- und Rückfrage-Fenstern (trat unter KDE auf).
+- Flache Symbole in den Tuxdex-Farben statt der Symbole des System-Themes; Buttons in allen Pop-ups im Tuxdex-Stil (Hauptaktion farbig, Abbrechen links, Aktion rechts), mehr Innenabstand.
+- Verschlüsseltes Backup wiederherstellen: Passwort-Abfrage im Tuxdex-Stil und auf Deutsch statt des englischen Standardfensters.
+
+## 1.6.0-beta.5
+- Taskmanager → **Autostart**:
+  - Autostart-Programme per Schalter an/aus, eigene Einträge entfernen, installierte Programme hinzufügen. System-Einträge bleiben unangetastet – Tuxdex legt nur eine eigene Einstellung in `~/.config/autostart` an.
+  - Hintergrunddienste des Benutzers (`systemd --user`) an/aus.
+  - **Bootzeit**: Dauer des letzten Starts, aufgeteilt in Firmware, Bootloader, Kernel, Initramfs und Dienste, dazu die langsamsten Dienste. Bekannte Bremsen wie `NetworkManager-wait-online` lassen sich per Knopf deaktivieren.
+
+## 1.6.0-beta.4
+- Taskmanager: **Prozesse nach Programm gruppiert** – jedes Programm ist ein aufklappbarer Ordner mit Summe für CPU, Arbeitsspeicher und Datenträger (z. B. „Spotify (3)“). „Alle beenden“ / „Alle erzwingen“ beendet alle Prozesse eines Ordners auf einmal, auch Priorität gilt für alle. Aufgeklappte Ordner bleiben beim Aktualisieren offen; abschaltbar über „Nach Programm gruppieren“.
+
+## 1.6.0-beta.3
+- **Weniger RAM**: Tabs werden erst beim ersten Öffnen gebaut und nach 5 Minuten ohne Nutzung wieder abgebaut (nie während ein Scan, Backup oder Befehl läuft). Freigegebener Speicher geht ans System zurück. Start: ~83 statt ~118 MB.
+- **Keine verwaisten Scans mehr**: Beim Schließen oder Neustart beendet Tuxdex alle gestarteten Hintergrundprozesse (vorher Rückfrage, wenn noch etwas läuft). Läuft beim Start noch ein Virenscan oder Backup aus einer früheren Sitzung, bietet Tuxdex an, ihn zu beenden.
+- Taskmanager: root-Prozesse, die Tuxdex gestartet hat, heißen jetzt z. B. „clamscan · gestartet von Tuxdex“ – ihr Speicher wird nicht mehr Tuxdex selbst zugerechnet.
+- Software-Liste: Tooltips nur noch in der Beschreibungsspalte (weniger Speicher bei vielen Paketen).
+
+## 1.6.0-beta.2
+- Vollversion/Beta als Umschalter mit Versionsanzeige (aus 1.5.6).
+
+## 1.6.0-beta.1
+- **Neues Modul „Backup“**:
+  - Mehrere Ziele gleichzeitig (USB-Platten, interne Laufwerke, Ordner) – jedes mit eigenem Fortschritt, Tempo und Restzeit.
+  - **Snapshots**: jede Sicherung eine eigene Version, unveränderte Dateien kosten keinen Platz (Hardlinks, wie Time Machine).
+  - **Spiegel**: 1:1-Kopie, überträgt nur Änderungen.
+  - **Archiv**: komprimiert mit zstd, xz oder gzip (3 Stärken), optional mit Passwort (AES-256). Wird einmal gepackt und parallel auf alle Ziele geschrieben, mit Prüfsumme und Prüfung nach dem Schreiben. Auf FAT32 automatisch in 4-GB-Teile geteilt.
+  - Ausnahmen (z. B. `~/.cache`), Versionen behalten (3–50), root-Modus für Systemordner.
+  - Vorhandene Backups je Ziel anzeigen, öffnen, löschen und wiederherstellen – in einen Ordner oder an den Originalort.
+  - Zeitplan täglich/wöchentlich per systemd-Timer (`tuxdex --backup`), läuft auch ohne Fenster und holt verpasste Termine nach.
+- Taskmanager → System: **Versionsstand** von Grafiktreiber (NVIDIA/Mesa/Vulkan), CPU-Microcode, Mainboard/BIOS (mit Alter), Kernel und Firmware (fwupd) – inkl. „Update da“ und „Neustart nötig“.
+- Sicherheit: **Leak-Test & VPN-Erkennung** – DNS-Leak-Test, welche DNS-Server Webseiten sehen, ob die IP als VPN (mit Anbieter), Proxy, Tor oder Rechenzentrum erkannt wird, und ob sie auf Sperrlisten steht.
+- Sicherheits-Check zeigt einen eingestellten **Proxy** (Umgebungsvariablen, GNOME, KDE).
+- Sicherheits-Check zeigt den aktuellen **DNS-Server**: Anbieter (z. B. Router, Cloudflare, Mullvad), Verbindung und ob die Anfragen verschlüsselt (DNS-over-TLS) oder durch den VPN-Tunnel laufen.
+- Sicherheits-Check: **Bekannte Sicherheitslücken** über `arch-audit` (optional) – zeigt, welche Pakete ein Update mit Fix haben.
+- Mullvad verbunden, aber Kill-Switch aus: Hinweis mit Knopf „Kill-Switch an“.
+- Virenscan: Hochrechnung ohne die Ladezeit der Signaturen, dazu voraussichtliches Ende (Uhrzeit) und Gesamtdauer.
+- Speicher → „Größen ermitteln“: misst parallel, zeigt jeden Wert sofort und einen Status wie beim Virenscan (läuft/fertig, was gerade gemessen wird, Fortschritt). Ordner, die länger als 2 Minuten brauchen, werden als „zu viele Dateien“ markiert statt alles zu blockieren.
+
 ## 1.5.6
 - Einstellungen → Aktualisierung: Vollversion/Beta als Umschalter statt Aufklappmenü. Daneben steht, welche Version es jeweils gibt und welche installiert ist.
 

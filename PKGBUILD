@@ -1,12 +1,13 @@
 # Maintainer: PyloGER (Voxellab) <contact@voxellab.de>
 pkgname=tuxdex
-pkgver=1.5.6
+pkgver=1.0.0
+epoch=1
 pkgrel=1
-pkgdesc="Grafische Systemverwaltung für Arch Linux: Updates, Software, Flatpak-Rechte, Datenträger, Speicher, Taskmanager, Antivirus, Sicherheit & Mullvad VPN"
+pkgdesc="Grafische Systemverwaltung für Arch Linux: Updates, Software, Backup, Flatpak-Rechte, Datenträger, Speicher, Taskmanager, Antivirus, Sicherheit & Mullvad VPN"
 arch=('any')
 url="https://github.com/PyloGER/Tuxdex"
 license=('MIT')
-depends=('python' 'pyside6' 'sudo' 'util-linux' 'iproute2' 'pciutils' 'hwdata' 'pacman-contrib' 'ttf-ibm-plex')
+depends=('python' 'pyside6' 'sudo' 'util-linux' 'iproute2' 'pciutils' 'hwdata' 'pacman-contrib' 'ttf-ibm-plex' 'rsync')
 optdepends=(
     'paru: AUR-Pakete aktualisieren und installieren'
     'flatpak: Flatpak-Apps verwalten'
@@ -20,6 +21,10 @@ optdepends=(
     'ufw: Firewall'
     'mullvad-vpn-daemon: Mullvad VPN'
     'sbctl: Secure Boot einrichten'
+    'arch-audit: Pakete auf bekannte Sicherheitslücken prüfen'
+    'zstd: Backup-Archive mit zstd komprimieren'
+    'gnupg: Backup-Archive mit Passwort verschlüsseln'
+    'pigz: schnellere gzip-Backups'
 )
 # früherer Projektname – wird beim Installieren automatisch ersetzt
 conflicts=('arch-manager')
@@ -37,7 +42,7 @@ source=(
         tuxdex-256.png
         tuxdex-512.png
         LICENSE)
-sha256sums=('4b044b94cddd511491dbce4791971e410ea2ce537b1a5a527d88eb9b7e34b6e6'
+sha256sums=('245a6e52b42744d1e48999a12ee4b4be5dd488296901414808a8e90884c096cc'
             '27c40e4efe990d8cc8e5e3484caab4dfb6c4577e04c9dc1ae903344440f19519'
             '992bab031982cb434b9a6ba4648cf29187ee8b956a0ca7aefe2909c62dc62fe6'
             '8f26609520915020bbd6da6d90bf3cbf59b8d8eb223072ad53cee0e0d2bdb010'
