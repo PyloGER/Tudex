@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -4423,6 +4423,69 @@ def internet_route_dev():
         return None
 
 
+DNS_PROVIDERS = {
+    "1.1.1.1": "Cloudflare", "1.0.0.1": "Cloudflare", "1.1.1.2": "Cloudflare", "1.1.1.3": "Cloudflare",
+    "2606:4700:4700::1111": "Cloudflare", "2606:4700:4700::1001": "Cloudflare",
+    "8.8.8.8": "Google", "8.8.4.4": "Google", "2001:4860:4860::8888": "Google", "2001:4860:4860::8844": "Google",
+    "9.9.9.9": "Quad9", "149.112.112.112": "Quad9", "2620:fe::fe": "Quad9", "2620:fe::9": "Quad9",
+    "10.64.0.1": "Mullvad", "100.100.100.100": "Tailscale",
+    "208.67.222.222": "OpenDNS", "208.67.220.220": "OpenDNS",
+    "94.140.14.14": "AdGuard", "94.140.15.15": "AdGuard",
+}
+
+
+def _dns_provider(ip, link):
+    if ip in DNS_PROVIDERS:
+        return DNS_PROVIDERS[ip]
+    if link.startswith(("wg0-mullvad", "mullvad")) or ip.startswith("194.242.2."):
+        return "Mullvad"
+    if ip.startswith("127.") or ip == "::1":
+        return "Lokaler DNS-Dienst"
+    try:
+        import ipaddress
+        if ipaddress.ip_address(ip).is_private:
+            return "Router im lokalen Netz"
+    except ValueError:
+        pass
+    return "Internetanbieter oder unbekannter Anbieter"
+
+
+def dns_state():
+    """Welcher DNS-Server beantwortet gerade die Anfragen?
+    {server, provider, link, dot} – dot: DNS-over-TLS aktiv. None, wenn nichts gefunden."""
+    route = internet_route_dev() or ""
+    links = []                 # (link, aktueller Server, DoT)
+    if which("resolvectl"):
+        try:
+            out = subprocess.run(["resolvectl", "status"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            out = ""
+        for block in re.split(r"\n(?=Global|Link \d)", out):
+            head = block.splitlines()[0] if block.strip() else ""
+            m = re.match(r"Link \d+ \(([^)]+)\)", head)
+            link = m.group(1) if m else ("" if head.startswith("Global") else None)
+            if link is None:
+                continue
+            cur = re.search(r"Current DNS Server:\s*(\S+)", block)
+            if cur:
+                links.append((link, cur.group(1), "+DNSOverTLS" in block))
+    if links:
+        link, srv, dot = next((l for l in links if l[0] == route), None) or \
+            next((l for l in links if l[0] == ""), None) or links[0]
+    else:
+        ns = [l.split()[1] for l in _read("/etc/resolv.conf").splitlines()
+              if l.startswith("nameserver") and len(l.split()) > 1]
+        if not ns:
+            return None
+        link, srv, dot = "", ns[0], False
+    name = srv.split("#", 1)[1] if "#" in srv else ""
+    ip = srv.split("#", 1)[0].split("%", 1)[0]
+    if ip.count(":") == 1:          # IPv4 mit Port
+        ip = ip.split(":", 1)[0]
+    return {"server": ip, "provider": _dns_provider(ip, link) + (f" ({name})" if name else ""),
+            "link": link or route, "dot": dot}
+
+
 def tailscale_state():
     """None (nicht installiert) oder dict(running, state, exit_node, ips)"""
     if not which("tailscale"):
@@ -6237,7 +6300,7 @@ class SecurityTab(Page):
         # ---------- Übersicht ----------
         ov = Panel("Übersicht")
         self.rows = {}
-        for key, title in (("vpn", "VPN"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
+        for key, title in (("vpn", "VPN"), ("dns", "DNS"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
                            ("sb", "Secure Boot"), ("ucode", "CPU-Microcode"), ("swapenc", "Swap-Verschlüsselung"),
                            ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("av", "Antivirus"),
                            ("ports", "Offene Netzwerk-Ports"), ("ssh", "SSH-Server")):
@@ -6449,6 +6512,7 @@ class SecurityTab(Page):
             ifaces, gw, dns = net_interfaces()
             r["ifaces"], r["gw"], r["dns"] = ifaces, gw, dns
             r["vpn"] = vpn_state(ifaces)
+            r["dns_now"] = dns_state()
             # Firewall
             r["fw"] = svc_active("ufw") or svc_active("firewalld") or svc_active("nftables") \
                 or svc_active("iptables")
@@ -6499,6 +6563,18 @@ class SecurityTab(Page):
         warn = 0
         # VPN
         warn += self._show_vpn(r["vpn"])
+        # DNS
+        d = r["dns_now"]
+        if not d:
+            self.rows["dns"].set("off", "Unbekannt", "Es wurde kein DNS-Server gefunden.")
+        else:
+            vpn_link = iface_kind(d["link"]) == "VPN" if d["link"] else False
+            txt = (f"{d['provider']} · {d['server']}" + (f" über {d['link']}" if d["link"] else "") + ". "
+                   + ("Anfragen laufen verschlüsselt (DNS-over-TLS)." if d["dot"] else
+                      "Anfragen laufen durch den VPN-Tunnel." if vpn_link else
+                      "Anfragen sind unverschlüsselt – der Netzbetreiber kann sehen, welche Seiten du aufrufst."))
+            self.rows["dns"].set("ok" if d["dot"] or vpn_link else "info",
+                                 "Verschlüsselt" if d["dot"] else ("Über VPN" if vpn_link else "Unverschlüsselt"), txt)
         # Firewall
         if r["fw"]:
             self.rows["fw"].set("ok", "Aktiv", f"{r['fw_name']} läuft"

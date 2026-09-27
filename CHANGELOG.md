@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.5
+- Sicherheits-Check zeigt den aktuellen **DNS-Server**: Anbieter (z. B. Router, Cloudflare, Mullvad), Verbindung und ob die Anfragen verschlüsselt (DNS-over-TLS) oder durch den VPN-Tunnel laufen.
+
 ## 1.5.4
 - Sicherheits-Check prüft zusätzlich:
   - **CPU-Microcode** (`intel-ucode`/`amd-ucode`) – fehlt er, per Klick installieren.
