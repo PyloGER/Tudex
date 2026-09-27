@@ -266,11 +266,24 @@ def _tr_args(args):
     return out
 
 
+_TR_ORIG = {}
+
+
+def set_text_raw(widget, text, method="setText"):
+    """Text ohne Übersetzung setzen (z. B. Changelog, der schon in der richtigen Sprache kommt)."""
+    for cls in type(widget).__mro__:
+        orig = _TR_ORIG.get((cls.__name__, method))
+        if orig:
+            return orig(widget, text)
+    return getattr(widget, method)(text)
+
+
 def _install_i18n():
     import PySide6.QtWidgets as W
 
     def wrap(cls, name):
         orig = getattr(cls, name)
+        _TR_ORIG[(cls.__name__, name)] = orig
 
         def f(self, *a, **k):
             return orig(self, *_tr_args(a), **k)
@@ -383,7 +396,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -11928,10 +11941,13 @@ def remote_info(repo, branch):
     m = re.search(r"^pkgver=([\w.]+)", pkgb, re.M)
     if not m:
         raise ValueError("PKGBUILD ohne pkgver gefunden")
-    try:
-        cl = _http_get(f"{base}/CHANGELOG.md").decode(errors="replace")
-    except Exception:
-        cl = ""
+    cl = ""
+    for name in (["CHANGELOG.en.md"] if LANG == "en" else []) + ["CHANGELOG.md"]:
+        try:
+            cl = _http_get(f"{base}/{name}").decode(errors="replace")
+            break
+        except Exception:
+            pass
     # pkgver kennt keinen Bindestrich: „1.6.0beta1“ → „1.6.0-beta.1“ (wie APP_VERSION)
     return re.sub(r"(\d)(alpha|beta|rc)(\d*)$", r"\1-\2.\3", m.group(1)), cl, sha
 
@@ -12146,7 +12162,7 @@ class UpdatePanel(QWidget):
     def _show_channel_info(self):
         """Welche Version gibt es in welchem Zweig – und was ist installiert?"""
         rv = self.remote_versions
-        inst = "Beta" if "beta" in APP_VERSION or "rc" in APP_VERSION else "Vollversion"
+        inst = "Beta" if "beta" in APP_VERSION or "rc" in APP_VERSION else tr("Vollversion")
         parts = []
         for b, name in (("main", "Vollversion"), ("beta", "Beta")):
             v = rv.get(b)
@@ -12217,7 +12233,7 @@ class UpdatePanel(QWidget):
         elif newer:
             self.badge.set("warn", f"Version {ver} verfügbar")
             txt = changes_since(cl, APP_VERSION)
-            self.changes.setText(txt or f"Neue Version {ver}.")
+            set_text_raw(self.changes, txt) if txt else self.changes.setText(f"Neue Version {ver}.")
             self.changes.show()
             if silent and self.settings.get("ask_on_start", True):
                 self._offer_update(ver, txt)
@@ -12233,7 +12249,7 @@ class UpdatePanel(QWidget):
         box.setWindowTitle("Update verfügbar")
         box.setTextFormat(Qt.RichText)
         box.setText(f"<b>Tuxdex {ver} ist verfügbar</b> – installiert ist {APP_VERSION}.")
-        box.setInformativeText(changes_html or "")
+        set_text_raw(box, changes_html or "", "setInformativeText")
         later = box.addButton("Später", QMessageBox.RejectRole)
         later.setProperty("variant", "ghost")
         now = box.addButton("Jetzt aktualisieren", QMessageBox.AcceptRole)

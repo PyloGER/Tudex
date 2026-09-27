@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2
+Englischer Changelog.
+
+- **Updater**: Ist Englisch eingestellt, erscheint die Liste der Änderungen jetzt auf Englisch (`CHANGELOG.en.md`) statt als halb übersetzte Mischung.
+- GitHub-Releases enthalten die Notizen auf Deutsch und Englisch.
+- „Installiert: … (Vollversion)“ im Updater wird ebenfalls übersetzt.
+
 ## 1.1.1
 Fehlerbehebungen.
 
