@@ -9150,7 +9150,14 @@ def normalize_repo(text):
 
 
 def version_tuple(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:4]) or (0,)
+    """Vergleichbare Version: 1.6.0 > 1.6.0-beta.2 > 1.6.0-beta.1 > 1.5.4 (auch „1.6.0beta1“ aus dem PKGBUILD)."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)(?:[-.]?(alpha|beta|rc)\.?(\d*))?", v or "")
+    if not m:
+        return (0,)
+    nums = [int(x) for x in m.group(1).split(".")][:4]
+    nums += [0] * (4 - len(nums))
+    stage = {"alpha": -3, "beta": -2, "rc": -1}.get(m.group(2), 0)
+    return tuple(nums) + (stage, int(m.group(3) or 0))
 
 
 def _http_get(url, timeout=15):
@@ -9229,7 +9236,7 @@ def changes_since(changelog, current):
     """Abschnitte „## x.y.z“ aus dem Changelog, die neuer als die laufende Version sind."""
     out, keep = [], False
     for line in changelog.splitlines():
-        h = re.match(r"^##\s+v?([\d.]+)", line)
+        h = re.match(r"^##\s+v?(\d[\w.-]*)", line)
         if h:
             keep = version_tuple(h.group(1)) > version_tuple(current)
             if keep:
@@ -9304,10 +9311,17 @@ class UpdatePanel(QWidget):
         src.setSpacing(8)
         self.repo_edit = LineEdit(self.settings.get("repo", ""), placeholder="benutzer/tuxdex oder GitHub-Link",
                                   mono=True)
-        self.branch_edit = LineEdit(self.settings.get("branch", "main"), mono=True)
-        self.branch_edit.setFixedWidth(120)
+        self.channel = QComboBox()
+        self.channel.setMinimumHeight(38)
+        self.channel.addItem("Vollversion (empfohlen)", "main")
+        self.channel.addItem("Beta – neue Funktionen früher", "beta")
+        cur = self.settings.get("branch", "main")
+        if self.channel.findData(cur) < 0:
+            self.channel.addItem(f"Zweig „{cur}“", cur)
+        self.channel.setCurrentIndex(self.channel.findData(cur))
+        self.channel.currentIndexChanged.connect(self._channel_changed)
         src.addLayout(Field("GitHub-Repository", self.repo_edit), 1)
-        src.addLayout(Field("Zweig", self.branch_edit))
+        src.addLayout(Field("Version", self.channel))
         sb = QVBoxLayout()
         sb.addStretch(1)
         sb.addWidget(Button("Speichern", "ghost", self.save_source))
@@ -9365,12 +9379,26 @@ class UpdatePanel(QWidget):
             show_warning(self, "Repository", "Bitte „benutzer/repo“ oder einen GitHub-Link angeben.")
             return
         self.settings["repo"] = repo
-        self.settings["branch"] = self.branch_edit.text().strip() or "main"
+        self.settings["branch"] = self.channel.currentData() or "main"
         self.repo_edit.setText(repo)
         save_settings(self.settings)
         self.app.set_status("Update-Quelle gespeichert.")
         if repo:
             self.check()
+
+    def _channel_changed(self, _=0):
+        branch = self.channel.currentData() or "main"
+        if branch == "beta" and self.settings.get("branch") != "beta" and not ask_confirm(
+                self, "Beta-Versionen", "Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler "
+                "haben.\n\nZurück zur Vollversion geht jederzeit hier.", "Beta verwenden"):
+            self.channel.blockSignals(True)
+            self.channel.setCurrentIndex(self.channel.findData(self.settings.get("branch", "main")))
+            self.channel.blockSignals(False)
+            return
+        self.settings["branch"] = branch
+        save_settings(self.settings)
+        self.app.set_status("Beta-Versionen aktiv." if branch == "beta" else "Vollversion ausgewählt.")
+        self.check()
 
     def _auto_changed(self, on):
         self.settings["auto_check"] = on
@@ -9413,9 +9441,18 @@ class UpdatePanel(QWidget):
             return
         self.remote_version = ver
         newer = version_tuple(ver) > version_tuple(APP_VERSION)
-        self.b_update.setVisible(newer)
+        # Von einer Beta zurück zur Vollversion: ältere Version anbieten, aber nicht beim Start aufdrängen
+        back = not newer and self.settings.get("branch", "main") == "main" and \
+            version_tuple(ver) < version_tuple(APP_VERSION)
+        self.b_update.setText(f"Zur Vollversion {ver} wechseln" if back else "Jetzt aktualisieren")
+        self.b_update.setVisible(newer or back)
         self.app.show_update_hint(ver if newer else None)
-        if newer:
+        if back:
+            self.badge.set("info", f"Beta {APP_VERSION} installiert")
+            self.changes.setText(f"Die aktuelle Vollversion ist {ver}. Du nutzt noch die Beta {APP_VERSION} – "
+                                 "wechseln installiert die Vollversion.")
+            self.changes.setVisible(not silent)
+        elif newer:
             self.badge.set("warn", f"Version {ver} verfügbar")
             txt = changes_since(cl, APP_VERSION)
             self.changes.setText(txt or f"Neue Version {ver}.")
