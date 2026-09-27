@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.0-beta.12
+- Speicher → Typische Platzfresser & Aufräumen: **(i) neben jedem Eintrag** – beim Drüberfahren oder per Klick steht, was dort liegt, welcher Befehl beim Knopf läuft (z. B. `paccache -rk2`, `pacman -Rns`, `journalctl --vacuum-size=200M`) und was erhalten bleibt. Bei „nur Anzeige“ steht, wie man selbst aufräumt.
+
 ## 1.6.0-beta.11
 - Dialoge unter KDE: Texte stehen nicht mehr auf dunkleren Kästen. Tuxdex setzt jetzt eine eigene Farbpalette, statt die Fensterfarben des Desktop-Themes (Breeze) zu übernehmen – gilt auch für Menüs, Tooltips und Auswahlfarben.
 

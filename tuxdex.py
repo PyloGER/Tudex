@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.11"
+APP_VERSION = "1.6.0-beta.12"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -410,6 +410,9 @@ QPushButton#SysHint:hover { background: $bg2; }
 QPushButton#UpdHint { background: transparent; color: $warn; border: 1px solid $warn; padding: 2px 10px;
     font-size: 9pt; }
 QPushButton#UpdHint:hover { background: $bg2; }
+QPushButton#Info { background: transparent; border: 0; border-radius: 11px; padding: 0; min-width: 0; }
+QPushButton#Info:hover { background: $bg3; }
+QPushButton#Info:focus { border: 2px solid $focus; }
 QPushButton#Gear { background: transparent; border: 0; border-radius: 6px; padding: 5px; min-width: 0; }
 QPushButton#Gear:hover { background: $bg2; }
 QPushButton#Gear:checked { background: $bg3; }
@@ -885,6 +888,25 @@ def Button(text, variant="ghost", on_click=None, tooltip=None):
         b.clicked.connect(on_click)
     if tooltip:
         b.setToolTip(tooltip)
+    return b
+
+
+INFO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.6" fill="none"
+ stroke="{c}" stroke-width="1.3"/><rect x="7.3" y="7" width="1.4" height="4.6" rx=".7" fill="{c}"/>
+<circle cx="8" cy="4.9" r=".9" fill="{c}"/></svg>"""
+
+
+def info_button(title, text):
+    """Kleines (i): Tooltip beim Drüberfahren, Klick öffnet die Erklärung als Fenster."""
+    b = QPushButton()
+    b.setObjectName("Info")
+    b.setIcon(svg_icon(INFO_SVG.replace("{c}", COLORS["muted"]), 16))
+    b.setIconSize(QSize(16, 16))
+    b.setFixedSize(22, 22)
+    b.setCursor(Qt.PointingHandCursor)
+    b.setFocusPolicy(Qt.TabFocus)
+    b.setToolTip(text)
+    b.clicked.connect(lambda: show_info(b.window(), title, text))
     return b
 
 
@@ -4055,25 +4077,60 @@ class StorageTab(Page):
         home = os.path.expanduser("~")
         self.cleanup = [
             {"key": "pkgcache", "name": "Pacman-Paketcache", "path": "/var/cache/pacman/pkg",
-             "action": "Alte Versionen löschen", "hint": "behält die 2 neuesten Versionen je Paket"},
+             "action": "Alte Versionen löschen", "hint": "behält die 2 neuesten Versionen je Paket",
+             "info": "pacman hebt jede heruntergeladene Paketversion in /var/cache/pacman/pkg auf – über Monate "
+                     "werden das schnell mehrere GB.\n\n„Alte Versionen löschen“ führt paccache -rk2 aus: je Paket "
+                     "bleiben die 2 neuesten Versionen liegen (für ein Zurückstufen, falls ein Update Probleme macht). "
+                     "Zusätzlich entfernt paccache -ruk0 alle Dateien von Paketen, die gar nicht mehr installiert sind. "
+                     "Ohne paccache (Paket pacman-contrib) nutzt Tuxdex pacman -Sc: dann bleibt nur die installierte "
+                     "Version im Cache.\n\nBraucht root. Installierte Programme bleiben unberührt."},
             {"key": "orphans", "name": "Verwaiste Pakete", "path": "pacman -Qdtq",
-             "action": "Entfernen", "hint": "Abhängigkeiten, die nichts mehr braucht"},
+             "action": "Entfernen", "hint": "Abhängigkeiten, die nichts mehr braucht",
+             "info": "Pakete, die einmal als Abhängigkeit eines anderen Programms installiert wurden, das es nicht "
+                     "mehr gibt (pacman -Qdtq).\n\n„Entfernen“ zeigt vorher die Liste und löscht sie dann mit "
+                     "pacman -Rns – samt ihrer eigenen, ebenfalls unnötigen Abhängigkeiten und Konfigurationsdateien.\n\n"
+                     "Selbst installierte Programme sind nie dabei. Braucht root."},
             {"key": "journal", "name": "System-Logs (Journal)", "path": "/var/log/journal",
-             "action": "Auf 200 MB kürzen", "hint": ""},
+             "action": "Auf 200 MB kürzen", "hint": "",
+             "info": "Das System-Protokoll (systemd-journald) sammelt Meldungen aller Dienste und des Kernels.\n\n"
+                     "„Auf 200 MB kürzen“ führt journalctl --vacuum-size=200M aus: die ältesten Einträge werden "
+                     "gelöscht, bis das Protokoll noch 200 MB belegt. Neue Meldungen werden weiter geschrieben.\n\n"
+                     "Dauerhaft begrenzen: Sicherheit → Checkliste → System-Protokoll. Braucht root."},
             {"key": "trash", "name": "Papierkorb", "path": os.path.join(home, ".local/share/Trash"),
-             "action": "Leeren", "hint": ""},
+             "action": "Leeren", "hint": "",
+             "info": "Dateien, die du im Dateimanager gelöscht hast, landen zuerst hier (~/.local/share/Trash).\n\n"
+                     "„Leeren“ löscht sie endgültig – sie lassen sich danach nicht mehr wiederherstellen."},
             {"key": "flatpak", "name": "Flatpak (System + Benutzer)", "path": "/var/lib/flatpak",
-             "action": "Unbenutzte entfernen", "hint": "entfernt ungenutzte Laufzeiten"},
+             "action": "Unbenutzte entfernen", "hint": "entfernt ungenutzte Laufzeiten",
+             "info": "Flatpak-Apps brauchen Laufzeiten (z. B. GNOME- oder KDE-Plattform). Nach Updates oder dem "
+                     "Deinstallieren von Apps bleiben alte Versionen liegen.\n\n„Unbenutzte entfernen“ führt "
+                     "flatpak uninstall --unused aus. Apps und ihre Daten "
+                     "bleiben erhalten."},
             {"key": "usercache", "name": "Benutzer-Cache (~/.cache)", "path": os.path.join(home, ".cache"),
-             "action": None, "hint": "nur Anzeige – Programme legen hier Zwischendaten ab"},
+             "action": None, "hint": "nur Anzeige – Programme legen hier Zwischendaten ab",
+             "info": "Browser, Thumbnail-Vorschauen, Spiele-Launcher und viele andere Programme legen in ~/.cache "
+                     "Zwischendaten ab. Löschen ist grundsätzlich möglich – die Programme bauen den Cache neu auf.\n\n"
+                     "Tuxdex zeigt hier nur die Größe, weil laufende Programme beim Löschen durcheinanderkommen können. "
+                     "Welcher Ordner groß ist, siehst du oben in der Speicher-Übersicht."},
             {"key": "paru", "name": "AUR-Build-Cache (paru)", "path": os.path.join(home, ".cache/paru"),
-             "action": None, "hint": "nur Anzeige"},
-            {"key": "docker", "name": "Docker", "path": "/var/lib/docker", "action": None, "hint": "nur Anzeige"},
+             "action": None, "hint": "nur Anzeige",
+             "info": "paru baut AUR-Pakete in ~/.cache/paru/clone und hebt Quellcode und fertige Pakete auf.\n\n"
+                     "Zum Aufräumen im Terminal: paru -Sc (fragt nach, was gelöscht wird)."},
+            {"key": "docker", "name": "Docker", "path": "/var/lib/docker", "action": None, "hint": "nur Anzeige",
+             "info": "Docker speichert Images, Container und Volumes in /var/lib/docker.\n\nZum Aufräumen im "
+                     "Terminal: docker system prune (entfernt gestoppte Container, ungenutzte Netzwerke und "
+                     "Images ohne Namen; mit -a auch alle unbenutzten Images). Volumes bleiben, außer mit --volumes."},
         ]
         for i, c in enumerate(self.cleanup):
             txt = QVBoxLayout()
             txt.setSpacing(0)
-            txt.addWidget(Label(c["name"]))
+            head = QHBoxLayout()
+            head.setSpacing(6)
+            head.addWidget(Label(c["name"]))
+            if c.get("info"):
+                head.addWidget(info_button(c["name"], c["info"]))
+            head.addStretch(1)
+            txt.addLayout(head)
             txt.addWidget(Label(short_path(c["path"]) + (f" · {c['hint']}" if c["hint"] else ""), "Hint"))
             self.cl_grid.addLayout(txt, i, 0)
             c["size_lbl"] = Label("—", "Value")
