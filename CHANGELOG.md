@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0-beta.3
+- **Englisch**: Tuxdex gibt es jetzt auch auf Englisch. Standard ist die Systemsprache; umstellen unter Einstellungen → Sprache · Language (wirkt nach einem Neustart). Alle Oberflächentexte, Rückfragen, Hinweise und Tabellenköpfe sind übersetzt; Befehlsausgaben bleiben, wie sie sind.
+- Englisches README (`README.en.md`), Umschalter oben in beiden READMEs.
+- Formatieren und Mullvad hängen nicht mehr vom angezeigten Text ab (wäre bei Englisch sonst kaputtgegangen).
+- Für Mitwirkende: `tools/i18n_extract.py` zeigt, welche Texte noch keine Übersetzung haben.
+
 ## 1.1.0-beta.2
 - **Eigenes pacman-Repository**: Jedes Release enthält jetzt das fertige Paket und eine Repo-Datenbank. Mit `[tuxdex]` in `/etc/pacman.conf` installiert und aktualisiert sich Tuxdex über `pacman -Syu` – ohne AUR (Anleitung im README).
 - **Alpha-Hinweis**: Vor der ersten Aktion mit root-Rechten erscheint einmal ein Hinweis („Alpha-Phase, Nutzung auf eigenes Risiko“). Erst nach Haken und „Akzeptieren“ führt Tuxdex root-Befehle aus – ohne Zustimmung wird jede root-Aktion abgebrochen, auch intern. Dazu ein dauerhaftes „ALPHA“-Abzeichen in der Kopfleiste und ein Hinweis im Passwort-Fenster.

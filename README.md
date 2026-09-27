@@ -7,7 +7,11 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.2-e9c46a">
+  <b>Deutsch</b> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.3-e9c46a">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -29,6 +33,8 @@
 Tuxdex bündelt in einer übersichtlichen Oberfläche, wofür man sonst ein Dutzend Terminal-Befehle braucht: Updates, Pakete, USB-Sticks, Speicherplatz, Backups, Prozesse, Virenscan, Firewall und VPN.
 
 Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was passiert. Rückfragen von `pacman` oder `paru` erscheinen als Fenster. Das sudo-Passwort wird **einmal pro Sitzung** abgefragt und nie gespeichert.
+
+**Sprache:** Deutsch und Englisch. Tuxdex richtet sich nach der Systemsprache; umstellen unter **Einstellungen (Zahnrad unten links) → Sprache**.
 
 <p align="center">
   <img src="docs/readme/modules.png" alt="Die 11 Module von Tuxdex" width="100%">
@@ -162,7 +168,7 @@ Beispiele (Sicherung am 27.09.2026 um 10:15 Uhr):
 
 ## Abhängigkeiten
 
-**Pflicht** (installiert `makepkg -si` automatisch): `python`, `pyside6`, `sudo`, `util-linux`, `iproute2`, `pciutils`, `hwdata`, `pacman-contrib`, `ttf-ibm-plex`
+**Pflicht** (installiert `makepkg -si` automatisch): `python`, `pyside6`, `sudo`, `util-linux`, `iproute2`, `pciutils`, `hwdata`, `pacman-contrib`, `ttf-ibm-plex`, `rsync`
 
 **Optional**, je nach genutzten Funktionen. Tuxdex läuft auch ohne diese Pakete – fehlt eines, ist nur der passende Bereich inaktiv. ClamAV und Mullvad installiert Tuxdex nicht selbst; wer sie nutzen möchte, installiert sie eigenständig.
 
@@ -198,7 +204,8 @@ tuxdex.svg, *.png      App-Icon in allen Größen
 PKGBUILD               Bauanleitung für makepkg / pacman
 CHANGELOG.md           Änderungen je Version
 docs/                  Screenshots, README-Grafiken und Logo-Varianten
-.github/workflows/     Legt für jede neue Version auf main automatisch ein GitHub-Release an
+tools/                 Hilfsskripte (z. B. fehlende Übersetzungen finden)
+.github/workflows/     Legt für jede neue Version auf main ein GitHub-Release und das pacman-Repo an
 ```
 
 ## Mitmachen
@@ -211,6 +218,8 @@ Nach Änderungen an Dateien, die im `PKGBUILD` stehen, die Prüfsummen aktualisi
 ```bash
 updpkgsums   # aus pacman-contrib
 ```
+
+Neue oder geänderte Oberflächentexte brauchen eine englische Übersetzung im Katalog `EN` am Ende von `tuxdex.py`. `python3 tools/i18n_extract.py` listet fehlende auf.
 
 ## Entstehung
 
