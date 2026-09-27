@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.6.0-beta.2
+- Vollversion/Beta als Umschalter mit Versionsanzeige (aus 1.5.6).
+
 ## 1.6.0-beta.1
 - **Neues Modul „Backup“**:
   - Mehrere Ziele gleichzeitig (USB-Platten, interne Laufwerke, Ordner) – jedes mit eigenem Fortschritt, Tempo und Restzeit.
@@ -17,6 +20,9 @@
 - Mullvad verbunden, aber Kill-Switch aus: Hinweis mit Knopf „Kill-Switch an“.
 - Virenscan: Hochrechnung ohne die Ladezeit der Signaturen, dazu voraussichtliches Ende (Uhrzeit) und Gesamtdauer.
 - Speicher → „Größen ermitteln“: misst parallel, zeigt jeden Wert sofort und einen Status wie beim Virenscan (läuft/fertig, was gerade gemessen wird, Fortschritt). Ordner, die länger als 2 Minuten brauchen, werden als „zu viele Dateien“ markiert statt alles zu blockieren.
+
+## 1.5.6
+- Einstellungen → Aktualisierung: Vollversion/Beta als Umschalter statt Aufklappmenü. Daneben steht, welche Version es jeweils gibt und welche installiert ist.
 
 ## 1.5.5
 - Einstellungen → Aktualisierung: Auswahl **Vollversion** oder **Beta** – Beta-Versionen bekommen neue Funktionen früher. Zurück zur Vollversion geht jederzeit.
