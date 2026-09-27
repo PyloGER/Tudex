@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -7168,8 +7168,9 @@ def remote_info(repo, branch):
     return m.group(1), cl, sha
 
 
-def fetch_package_sources(repo, ref, dest):
-    """Lädt PKGBUILD und alle darin unter source=() genannten Dateien einzeln vom Commit `ref`."""
+def fetch_package_sources(repo, ref, dest, progress=None):
+    """Lädt PKGBUILD und alle darin unter source=() genannten Dateien einzeln vom Commit `ref`.
+    progress(i, n, name) wird nach jeder Datei aufgerufen (aus dem Worker-Thread)."""
     base = f"https://raw.githubusercontent.com/{repo}/{ref}"
     pkgb = _http_get(f"{base}/PKGBUILD", timeout=30)
     text = pkgb.decode(errors="replace")
@@ -7180,11 +7181,16 @@ def fetch_package_sources(repo, ref, dest):
     os.makedirs(dest, exist_ok=True)
     with open(os.path.join(dest, "PKGBUILD"), "wb") as fh:
         fh.write(pkgb)
-    for f in files:
+    n = len(files) + 1
+    if progress:
+        progress(1, n, "PKGBUILD")
+    for i, f in enumerate(files, 2):
         if "/" in f or "::" in f or f.startswith(".") or not re.fullmatch(r"[\w.+-]+", f):
             raise ValueError(f"unerwarteter Dateiname im PKGBUILD: {f}")
         with open(os.path.join(dest, f), "wb") as fh:
             fh.write(_http_get(f"{base}/{f}", timeout=60))
+        if progress:
+            progress(i, n, f)
     return dest
 
 
@@ -7302,6 +7308,12 @@ class UpdatePanel(QWidget):
         p.body.addWidget(Label("Ist der Ordner ein Git-Klon, holt Tuxdex vorher die neueste Version (git pull). "
                                "Gebaut wird mit makepkg in einem Arbeitsordner, installiert mit pacman – "
                                "danach startet Tuxdex neu.", "Hint", wrap=True))
+        self.step = Label("", "Hint")
+        self.step.hide()
+        p.body.addWidget(self.step)
+        self.progress = ProgressBar()
+        self.progress.hide()
+        p.body.addWidget(self.progress)
         self.log = LogView(150)
         self.log.hide()
         p.body.addWidget(self.log)
@@ -7401,6 +7413,38 @@ class UpdatePanel(QWidget):
             self.app.open_settings()
             self.update_from_github(confirmed=True)
 
+    # ---- Fortschritt ----------------------------------------------------------
+
+    def _prog(self, value, text):
+        """Fortschritt 0–100 (None = unbestimmt) mit Schritt-Beschreibung; Balken läuft nie zurück."""
+        if value is not None:
+            value = max(value, self.progress.value or 0)
+        self.progress.show()
+        self.step.show()
+        self.step.setText(text)
+        self.progress.set(value, "" if value is None else f"{int(value)} %")
+
+    def _prog_fail(self, text):
+        self.step.show()
+        self.step.setText("✕  " + text)
+        self.progress.set(self.progress.value or 0, "Fehler")
+
+    def _need_admin(self):
+        """Ohne gültige sudo-Sitzung startet keine Aktualisierung."""
+        if not SYSTEM_INSTALL:
+            return True
+        if self.app.priv.ensure(self):
+            return True
+        self.badge.set("warn", "Abgebrochen – Admin-Rechte nötig")
+        show_warning(self, "Admin-Rechte nötig",
+                     "Zum Aktualisieren wird das Paket mit pacman installiert – dafür ist das sudo-Passwort nötig. "
+                     "Ohne Anmeldung wird nichts heruntergeladen oder verändert.")
+        return False
+
+    def _start_progress(self):
+        self.progress.value = 0
+        self._prog(0, "Vorbereiten …")
+
     def update_from_github(self, confirmed=False):
         repo, branch = self.settings.get("repo"), self.settings.get("branch", "main")
         if not repo:
@@ -7409,16 +7453,24 @@ class UpdatePanel(QWidget):
                                              f"Tuxdex auf Version {self.remote_version} aktualisieren?\n\n"
                                              f"Quelle: github.com/{repo} ({branch})", "Aktualisieren"):
             return
+        if not self._need_admin():
+            return
         self.log.show()
         self.log.set_text(f"Lade github.com/{repo} ({branch}) …\n")
         self.badge.set("info", "Lade herunter …")
+        self._start_progress()
+        self._prog(2, "Suche neuesten Stand …")
+
+        def step(i, n, name):
+            ui(lambda: self._prog(5 + 20 * i / n, f"Lade Dateien {i}/{n}: {name}"))
 
         def worker():
             try:
                 if SYSTEM_INSTALL:
                     ref = latest_commit(repo, branch) or branch
-                    ui(lambda r=ref: self.log.append_text(f"Commit {r[:7]} – lade Dateien …\n"))
-                    src = fetch_package_sources(repo, ref, os.path.join(fresh_build_dir(), "tuxdex"))
+                    ui(lambda r=ref: (self.log.append_text(f"Commit {r[:7]} – lade Dateien …\n"),
+                                      self._prog(5, f"Commit {r[:7]} – lade Dateien …")))
+                    src = fetch_package_sources(repo, ref, os.path.join(fresh_build_dir(), "tuxdex"), step)
                     ui(lambda: self._build(src))
                 else:
                     ref = latest_commit(repo, branch) or branch
@@ -7426,7 +7478,8 @@ class UpdatePanel(QWidget):
                     ui(lambda: self._replace_script(code))
             except Exception as e:
                 ui(lambda m=str(e): (self.log.append_text(f"error: {m}\n"),
-                                     self.badge.set("danger", "Aktualisierung fehlgeschlagen")))
+                                     self.badge.set("danger", "Aktualisierung fehlgeschlagen"),
+                                     self._prog_fail("Download fehlgeschlagen")))
         threading.Thread(target=worker, daemon=True).start()
 
     # ---- Lokal ----------------------------------------------------------------
@@ -7437,6 +7490,11 @@ class UpdatePanel(QWidget):
                                            "Tuxdex (*.tar.gz *.tgz *.py);;Alle Dateien (*)")
         if not f:
             return
+        if not f.endswith(".py") and not self._need_admin():
+            return
+        if not f.endswith(".py"):
+            self._start_progress()
+            self._prog(10, "Entpacke Archiv …")
         self.log.show()
         if f.endswith(".py"):
             if SYSTEM_INSTALL:
@@ -7456,6 +7514,7 @@ class UpdatePanel(QWidget):
                 raise ValueError("Im Archiv ist kein PKGBUILD für tuxdex.")
         except Exception as e:
             show_error(self, "Archiv", str(e))
+            self._prog_fail("Archiv ungültig")
             return
         if SYSTEM_INSTALL:
             self._confirm_build(src, os.path.basename(f))
@@ -7475,6 +7534,10 @@ class UpdatePanel(QWidget):
         if not find_pkgbuild(d):
             show_error(self, "Ordner", "In diesem Ordner liegt kein PKGBUILD für tuxdex.")
             return
+        if not self._need_admin():
+            return
+        self._start_progress()
+        self._prog(5, "Hole neueste Version (git pull) …")
         self.settings["local_dir"] = d
         save_settings(self.settings)
         self._update_last_btn()
@@ -7510,43 +7573,84 @@ class UpdatePanel(QWidget):
         if version_tuple(ver) <= version_tuple(APP_VERSION):
             if not ask_confirm(self, "Gleiche oder ältere Version", f"{origin} enthält Version {ver} – installiert ist "
                                f"{APP_VERSION}. Trotzdem neu installieren?", "Installieren"):
+                self._prog_fail("Abgebrochen")
                 return
         elif not ask_confirm(self, "Aktualisieren", f"Tuxdex {ver} aus {origin} installieren?", "Aktualisieren"):
+            self._prog_fail("Abgebrochen")
             return
         self._build(src)
 
     # ---- Bauen, installieren, neu starten ------------------------------------
 
+    # makepkg-/pacman-Meldungen → Fortschritt (Prozent, Beschreibung)
+    MAKEPKG_STEPS = [
+        ("Making package", 30, "Baue Paket …"),
+        ("Checking runtime dependencies", 32, "Prüfe Abhängigkeiten …"),
+        ("Installing missing dependencies", 35, "Installiere fehlende Abhängigkeiten …"),
+        ("Retrieving sources", 45, "Quellen vorbereiten …"),
+        ("Validating source", 50, "Prüfe Prüfsummen …"),
+        ("Extracting sources", 55, "Entpacke Quellen …"),
+        ("Starting package()", 62, "Stelle Paketinhalt zusammen …"),
+        ("Tidying install", 68, "Räume auf …"),
+        ("Creating package", 72, "Erzeuge Paketdatei …"),
+        ("Compressing package", 76, "Komprimiere Paket …"),
+        ("Finished making", 80, "Paket gebaut"),
+    ]
+    PACMAN_STEPS = [
+        ("loading packages", 84, "Lade Paket …"),
+        ("checking keys", 86, "Prüfe Paket …"),
+        ("checking package integrity", 87, "Prüfe Paket …"),
+        ("checking for file conflicts", 89, "Prüfe Dateikonflikte …"),
+        ("upgrading tuxdex", 92, "Installiere neue Version …"),
+        ("installing tuxdex", 92, "Installiere neue Version …"),
+        ("Running post-transaction hooks", 96, "Abschluss-Hooks …"),
+    ]
+
+    def _progress_from(self, table, line):
+        for key, pct, text in table:
+            if key.lower() in line.lower():
+                if pct >= (self.progress.value or 0):
+                    self._prog(pct, text)
+                return
+
     def _build(self, src):
         if not which("makepkg"):
             show_error(self, "makepkg fehlt", "makepkg (Paket pacman, Gruppe base-devel) wird benötigt.")
+            self._prog_fail("makepkg fehlt")
             return
-        if not self.app.priv.ensure(self):
+        if not self._need_admin():
+            self._prog_fail("Keine Admin-Rechte")
             return
         self.log.show()
         self.badge.set("info", "Baue Paket …")
-        steps = [{"cmd": ["makepkg", "-f", "-s", "--noconfirm"], "needs_sudo": False, "interactive": True,
-                  "cwd": src, "label": f"makepkg -f -s   (in {src})"}]
-        self.log.append_text("")
+        self._prog(28, "Baue Paket …")
+        self.log.append_text(f"\n$ makepkg -f -s   (in {short_path(src)})\n")
 
-        def built():
+        def built(rc):
             pkgs = sorted(f for f in os.listdir(src) if f.startswith("tuxdex-") and ".pkg.tar" in f)
-            if not pkgs:
+            if rc != 0 or not pkgs:
                 self.badge.set("danger", "Bauen fehlgeschlagen")
-                self.log.append_text("error: Kein Paket gebaut – Meldungen oben prüfen.\n")
+                self._prog_fail("Bauen fehlgeschlagen")
+                self.log.append_text(f"error: Kein Paket gebaut (Exit-Code {rc}) – Meldungen oben prüfen.\n")
                 return
             pkg = os.path.join(src, pkgs[-1])
+            self._prog(82, "Installiere mit pacman …")
+            self.badge.set("info", "Installiere …")
             self.log.append_text(f"\n$ sudo pacman -U {pkgs[-1]}\n")
             run_streaming(["pacman", "-U", "--noconfirm", pkg], self.log, needs_sudo=True, clear_first=False,
-                          interactive=True, on_done=self._installed)
-        run_sequence(steps, self.log, on_all_done=built)
+                          interactive=True, on_done=self._installed,
+                          on_line=lambda l: self._progress_from(self.PACMAN_STEPS, l))
+        run_streaming(["makepkg", "-f", "-s", "--noconfirm"], self.log, clear_first=False, interactive=True,
+                      cwd=src, on_done=built, on_line=lambda l: self._progress_from(self.MAKEPKG_STEPS, l))
 
     def _installed(self, rc):
         self.log.append_text(f"[Exit-Code {rc}]\n")
         if rc != 0:
             self.badge.set("danger", "Installation fehlgeschlagen")
+            self._prog_fail("Installation fehlgeschlagen")
             return
         self.badge.set("ok", "Installiert")
+        self._prog(100, "Fertig – neue Version installiert")
         if ask_confirm(self, "Aktualisiert", "Die neue Version ist installiert. Tuxdex jetzt neu starten?",
                        "Neu starten"):
             self.app.restart()
