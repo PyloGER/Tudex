@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/readme/hero.png" alt="Tuxdex auf einem Laptop – Sicherheits-Check" width="100%">
+  <img src="docs/readme/banner.png" alt="Tuxdex – Dein Arch-System in einem Fenster" width="100%">
 </p>
 
 ---
