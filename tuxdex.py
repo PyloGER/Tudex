@@ -38,6 +38,43 @@ from string import Template
 
 PKG_NAME_RE = re.compile(r"^[A-Za-z0-9@_.+-]+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+# Hier legt Tuxdex nie ein Swapfile an und löscht dort nichts
+SWAP_FORBIDDEN = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/efi", "/dev", "/proc", "/sys",
+                  "/run", "/var/lib/pacman", "/var/cache/pacman", "/root/.ssh")
+
+
+def _is_swapfile(path):
+    """True, wenn path ein aktiver Swap ist oder eine Swap-Signatur trägt (blkid, braucht sudo-Sitzung)."""
+    active = [l.split()[0] for l in _read("/proc/swaps").splitlines()[1:] if l.split()]
+    if path in active:
+        return True
+    try:
+        r = subprocess.run(["sudo", "-n", "blkid", "-p", "-o", "value", "-s", "TYPE", path],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == "swap"
+    except Exception:
+        return False
+
+
+def swap_path_problem(path, must_exist=False):
+    """Fehlertext, wenn path kein sicherer Ort für ein Swapfile ist – sonst None."""
+    if not PATH_RE.match(path) or os.path.normpath(path) != path or path == "/":
+        return "Bitte einen einfachen absoluten Pfad angeben (ohne Leerzeichen, „..“ oder doppelte /)."
+    if any(path == d or path.startswith(d + "/") for d in SWAP_FORBIDDEN):
+        return f"In {os.path.dirname(path)} legt Tuxdex aus Sicherheitsgründen kein Swapfile an."
+    if not os.path.isdir(os.path.dirname(path)):
+        return f"Den Ordner {os.path.dirname(path)} gibt es nicht."
+    if os.path.islink(path):
+        return f"{path} ist eine Verknüpfung – bitte den echten Pfad angeben."
+    if os.path.lexists(path):
+        if not os.path.isfile(path):
+            return f"{path} ist keine normale Datei."
+        if not _is_swapfile(path):
+            return (f"{path} existiert schon und ist kein Swapfile. Tuxdex überschreibt keine anderen Dateien – "
+                    "bitte einen anderen Namen wählen.")
+    elif must_exist:
+        return f"{path} gibt es nicht."
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -88,6 +125,221 @@ except Exception as e:
 
 
 # --------------------------------------------------------------------------
+# Sprache: Deutsch (Quelltext) oder Englisch (Katalog EN am Dateiende)
+# Alle Oberflächentexte laufen über tr(): Qt-Textfunktionen und die Konstruktoren
+# von Label, Button, Checkbox und Tabelleneinträgen werden dafür einmal umhüllt.
+# --------------------------------------------------------------------------
+
+LANG = "de"
+_TR_CACHE = {}
+_TR_PATS = None      # [(Regex, englische Vorlage, Platzhalter-ist-Endung, Länge)]
+_TR_SUB = None       # Regex über alle festen Texte (für zusammengesetzte Sätze)
+_TR_UP = None        # Katalog in GROSSBUCHSTABEN (Feldüberschriften, Tabellenköpfe)
+_WORD = "A-Za-zÄÖÜäöüß0-9_"
+_SUFFIXES = {"e", "en", "n", "er", "r", "s", "es"}
+_DE_WORD = re.compile(r"[äöüß]|\b(und|der|die|das|nicht|mit|für|oder|von|seit|ist|sind|noch|vor|zum|beim|den|dem)\b")
+
+
+def _tr_build():
+    global _TR_PATS, _TR_SUB, _TR_UP
+    _TR_UP = {k.upper(): v.upper() for k, v in EN.items() if "{}" not in k}
+    pats, lits = [], []
+    for de, en in EN.items():
+        if "{}" in de:
+            parts = de.split("{}")
+            suffix = [bool(re.search(f"[{_WORD}]$", parts[i])) and not re.match(f"[{_WORD}]", parts[i + 1] or " ")
+                      for i in range(len(parts) - 1)]
+            rx = "".join(re.escape(p) + (("([a-zäöüß]{0,3})" if suffix[i] else "(.*?)") if i < len(parts) - 1 else "")
+                         for i, p in enumerate(parts))
+            letters = len(re.sub("[^A-Za-zÄÖÜäöüß]", "", "".join(parts)))
+            pats.append((re.compile(rx, re.S), en, suffix, sum(len(p) for p in parts), letters))
+        elif " " in de.strip() or not re.match(f"[{_WORD}]", de):
+            lits.append(de)      # nur Satzteile – einzelne Wörter nie mitten im Text ersetzen
+    pats.sort(key=lambda p: -p[3])
+    _TR_PATS = pats
+    lits.sort(key=len, reverse=True)
+
+    def lit_rx(x):
+        a = f"(?<![{_WORD}/~-])" if re.match(f"[{_WORD}]", x) else ""
+        b = f"(?![{_WORD}/])" if re.search(f"[{_WORD}]$", x) else ""
+        return a + re.escape(x) + b
+    _TR_SUB = re.compile("|".join(lit_rx(x) for x in lits))
+
+
+def _fill(tmpl, vals):
+    out, i = [], 0
+    for piece in tmpl.split("{}")[:-1]:
+        out.append(piece)
+        out.append(vals[i] if i < len(vals) else "")
+        i += 1
+    out.append(tmpl.split("{}")[-1])
+    return "".join(out)
+
+
+def _tr(s, depth=0, loose=True):
+    if _TR_PATS is None:
+        _tr_build()
+    core = s.strip()
+    lead, trail = s[:len(s) - len(s.lstrip())], s[len(s.rstrip()):]
+    pre = ""
+    m = re.match(r"^([●▲✕○•⬆↓↑⚠\s]+)(\S.*)$", core, re.S)
+    if m and m.group(1).strip() and core not in EN and not _tr_pattern(core, depth, loose):
+        pre, core = m.group(1), m.group(2)
+    en = EN.get(core)
+    if en is None and core[-1:] in ".:" and core[:-1] in EN:
+        en = EN[core[:-1]] + core[-1]
+    if en is None and core.isupper():
+        en = _TR_UP.get(core)
+    if en is None and depth < 4:
+        en = _tr_pattern(core, depth, loose)
+    if en is None and depth < 4:
+        # zusammengesetzte Zeilen stufenweise zerlegen: Zeilen/Absätze → Sätze → „ · “ → „: “
+        for sep in (r"(<br>|\n+)", r"((?<=[.!?])\s+(?=[A-ZÄÖÜ„(]))", r"(\s{2,}·\s{2,}|\s+·\s+|\s{2,})", r"(:\s+)"):
+            pieces = re.split(sep, core)
+            if len(pieces) > 1:
+                out = [p if i % 2 else _tr(p, depth + 1, loose=False) for i, p in enumerate(pieces)]
+                if out != pieces:
+                    en = "".join(out)
+                break
+    if en is None:
+        en = core
+    if loose and _TR_SUB and depth == 0:
+        en = _TR_SUB.sub(lambda x: EN[x.group(0)], en)
+    return lead + pre + en + trail
+
+
+def _tr_pattern(core, depth, loose):
+    """Erste passende Vorlage mit Platzhaltern – eingesetzte Werte werden ebenfalls übersetzt."""
+    if _TR_PATS is None:
+        _tr_build()
+    if depth < 3:
+        for rx, tmpl, suf, _, letters in _TR_PATS:
+            mm = rx.fullmatch(core)
+            if not mm:
+                continue
+            groups = mm.groups()
+            if any(re.search(r"\s·\s|<br>|\n", g) for g in groups) and "·" not in tmpl and "<br>" not in tmpl:
+                continue       # Trennzeichen gehören der Zerlegung, nicht einem Platzhalter
+            if letters < 12 and any(len(g.split()) > 1 and _DE_WORD.search(g) for g in groups):
+                continue       # „{} über {}“ o. Ä. soll nicht ganze deutsche Sätze verschlucken
+            vals = []
+            for g, is_suf in zip(mm.groups(), suf):
+                if is_suf and g in _SUFFIXES | {""}:
+                    vals.append("s" if g else "")
+                elif g and re.search("[A-Za-zÄÖÜäöüß]{3}", g) and not g.startswith(("/", "~", "$")):
+                    vals.append(_tr(g, depth + 1, loose))
+                else:
+                    vals.append(g)
+            return _fill(tmpl, vals)
+    return None
+
+
+def tr(s, loose=True):
+    """Übersetzt einen Oberflächentext ins Englische (bei LANG == "en"), sonst unverändert."""
+    if LANG == "de" or not isinstance(s, str) or not re.search("[A-Za-zÄÖÜäöüß]{2}", s):
+        return s
+    key = (s, loose)
+    hit = _TR_CACHE.get(key)
+    if hit is None:
+        try:
+            hit = _tr(s, loose=loose)
+        except Exception:
+            hit = s
+        if len(_TR_CACHE) > 20000:
+            _TR_CACHE.clear()
+        _TR_CACHE[key] = hit
+    return hit
+
+
+def _tr_args(args):
+    """Erster Text (bzw. Textliste) in den Argumenten wird übersetzt."""
+    out, done = [], False
+    for a in args:
+        if not done and isinstance(a, str):
+            out.append(tr(a))
+            done = True
+        elif not done and isinstance(a, (list, tuple)) and a and all(isinstance(x, str) for x in a):
+            out.append([tr(x) for x in a])
+            done = True
+        else:
+            out.append(a)
+    return out
+
+
+def _install_i18n():
+    import PySide6.QtWidgets as W
+
+    def wrap(cls, name):
+        orig = getattr(cls, name)
+
+        def f(self, *a, **k):
+            return orig(self, *_tr_args(a), **k)
+        setattr(cls, name, f)
+
+    for cls, names in ((W.QLabel, ("setText",)), (W.QAbstractButton, ("setText",)),
+                       (W.QWidget, ("setToolTip", "setWindowTitle")), (W.QLineEdit, ("setPlaceholderText",)),
+                       (W.QComboBox, ("addItem", "addItems", "insertItem", "setItemText")),
+                       (W.QTableWidget, ("setHorizontalHeaderLabels",)), (W.QTreeWidget, ("setHeaderLabels",)),
+                       (W.QTableWidgetItem, ("setText", "setToolTip")), (W.QTreeWidgetItem, ("setText", "setToolTip")),
+                       (W.QListWidgetItem, ("setText", "setToolTip")),
+                       (W.QMessageBox, ("setText", "setInformativeText", "addButton"))):
+        for n in names:
+            wrap(cls, n)
+
+    import PySide6.QtGui as G
+    wrap(G.QPainter, "drawText")                  # selbst gezeichnete Texte (Balkenlisten, Hinweise)
+
+    class ListItem(W.QListWidgetItem):          # wird im Code lokal importiert
+        def __init__(self, *a, **k):
+            super().__init__(*_tr_args(a), **k)
+    W.QListWidgetItem = ListItem
+
+    for name in ("getExistingDirectory", "getOpenFileName", "getSaveFileName"):
+        orig = getattr(W.QFileDialog, name)
+
+        def f(parent=None, caption="", *a, _o=orig, **k):
+            return _o(parent, tr(caption), *_tr_args(a), **k) if a else _o(parent, tr(caption), **k)
+        setattr(W.QFileDialog, name, staticmethod(f))
+
+
+class QLabel(QLabel):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_args(a), **k)
+
+
+class QPushButton(QPushButton):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_args(a), **k)
+
+
+class QCheckBox(QCheckBox):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_args(a), **k)
+
+
+class QTableWidgetItem(QTableWidgetItem):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_args(a), **k)
+
+
+class QTreeWidgetItem(QTreeWidgetItem):
+    def __init__(self, *a, **k):
+        super().__init__(*_tr_args(a), **k)
+
+
+def init_language():
+    """Sprache aus den Einstellungen, sonst aus der Systemsprache (deutsch → de, alles andere → en)."""
+    global LANG
+    lang = _load_json(os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json"), {}).get("lang")
+    if lang not in ("de", "en"):
+        env = os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") or os.environ.get("LANG") or ""
+        lang = "de" if env.lower().startswith("de") else "en"
+    LANG = lang
+    if LANG != "de":
+        _install_i18n()
+
+
+# --------------------------------------------------------------------------
 # Design-Tokens (Theme „Dunkel“)
 # --------------------------------------------------------------------------
 
@@ -131,7 +383,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -427,11 +679,24 @@ QPushButton#Seg:checked { background: $bg3; color: $ink; }
 """)
 
 
+def _asset_dir():
+    """Privater Ordner für Icons: /run/user/<uid> (nur für dich lesbar) oder ~/.cache/tuxdex – nie ein
+    vorhersagbarer Ordner in /tmp, den ein anderer Benutzer vorher anlegen und präparieren könnte."""
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not (base and os.path.isdir(base) and os.stat(base).st_uid == os.getuid()):
+        base = os.path.join(os.path.expanduser("~/.cache"))
+    d = os.path.join(base, "tuxdex-assets")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if os.path.islink(d) or st.st_uid != os.getuid():
+        d = tempfile.mkdtemp(prefix="tuxdex-")
+    return d
+
+
 def _write_asset(name, svg):
-    d = os.path.join(tempfile.gettempdir(), f"tuxdex-{os.getuid()}")
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, name)
-    with open(path, "w") as f:
+    path = os.path.join(_asset_dir(), name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(svg)
     return path
 
@@ -616,6 +881,9 @@ def run_capture_async(args, callback, needs_sudo=False, timeout=60):
     nach einem Passwort - schlägt einfach fehl, wenn keine gültige
     Sitzung existiert."""
     full_args = (["sudo", "-n"] + args) if needs_sudo else args
+    if needs_sudo and not alpha_accepted():
+        QTimer.singleShot(0, lambda: callback(1, "", "Alpha-Hinweis nicht bestätigt – keine root-Aktion."))
+        return
 
     def worker():
         try:
@@ -729,6 +997,11 @@ class ProcessRun:
         else:
             inner = cmd
         self.full_cmd = (["sudo", "-n"] + inner) if needs_sudo else inner
+        if needs_sudo and not alpha_accepted():
+            log.append_text("Abgebrochen: Der Alpha-Hinweis wurde nicht bestätigt – keine Aktion mit root-Rechten.\n")
+            if on_done:
+                QTimer.singleShot(0, lambda: on_done(1))
+            return
         _ACTIVE_RUNS.add(self)
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -1015,6 +1288,9 @@ class LogView(QPlainTextEdit):
         self.append_text(s)
 
     def append_text(self, s):
+        if LANG != "de" and isinstance(s, str):
+            # eigene Meldungen zeilenweise übersetzen – nur ganze Zeilen, Befehlsausgaben bleiben unverändert
+            s = "".join(tr(line, loose=False) for line in s.splitlines(keepends=True))
         self.write_raw(s)
 
     def write_raw(self, s):
@@ -1225,6 +1501,68 @@ def show_error(parent, title, text):
     _msg(parent, QMessageBox.Critical, title, text, [("OK", "primary", True)])
 
 
+ALPHA_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json")
+ALPHA_TEXT = ("Tuxdex ist in der <b>Alpha-Phase</b>. Aktionen mit Administrator-Rechten (root) ändern dein System "
+              "direkt – z. B. Pakete, Datenträger, Swap, Firewall, Systemdateien. Trotz Rückfragen und Prüfungen "
+              "können Fehler passieren, bis hin zu Datenverlust oder einem System, das nicht mehr startet.<br><br>"
+              "<b>Nutzung auf eigenes Risiko.</b> Es gibt keine Gewährleistung (MIT-Lizenz). Lege vorher ein Backup "
+              "an und lies bei jeder Rückfrage, welcher Befehl ausgeführt wird – er steht immer im Ausgabefeld.")
+
+
+def alpha_accepted():
+    return bool(_load_json(ALPHA_FILE, {}).get("alpha_accepted"))
+
+
+class AlphaDialog(QDialog):
+    """Einmalige Zustimmung vor der ersten Aktion mit root-Rechten."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Alpha-Version – Hinweis")
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetMinimumSize)
+        lay.setContentsMargins(32, 28, 32, 24)
+        lay.setSpacing(14)
+        spacer = QWidget()
+        spacer.setFixedSize(480, 0)
+        lay.addWidget(spacer)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(StatusBadge("warn", "ALPHA"))
+        head.addWidget(Label("Aktionen mit root-Rechten", "DialogTitle"), 1)
+        lay.addLayout(head)
+        txt = Label(ALPHA_TEXT, wrap=True)
+        txt.setTextFormat(Qt.RichText)
+        lay.addWidget(txt)
+        self.cb = QCheckBox("Ich habe verstanden und nutze Tuxdex auf eigenes Risiko.")
+        lay.addWidget(self.cb)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(Button("Abbrechen", "ghost", self.reject))
+        self.ok = Button("Akzeptieren", "primary", self.accept)
+        self.ok.setEnabled(False)
+        self.cb.toggled.connect(self.ok.setEnabled)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+
+
+def ask_alpha_consent(parent):
+    """True, wenn der Alpha-Hinweis schon bestätigt ist oder jetzt bestätigt wird. Wird gespeichert."""
+    if alpha_accepted():
+        return True
+    if AlphaDialog(parent).exec() != QDialog.Accepted:
+        return False
+    data = _load_json(ALPHA_FILE, {})
+    data["alpha_accepted"] = datetime.now().isoformat(timespec="seconds")
+    data["alpha_version"] = APP_VERSION
+    _save_json(ALPHA_FILE, data)
+    win = parent.window() if parent else None
+    if hasattr(win, "refresh_alpha"):
+        win.refresh_alpha()
+    return True
+
+
 class PasswordDialog(QDialog):
     def __init__(self, parent, title="Administrator-Passwort", heading="sudo-Passwort eingeben",
                  note="Wird für die Dauer des Programmlaufs gemerkt – du musst es danach nicht erneut eingeben.",
@@ -1242,6 +1580,8 @@ class PasswordDialog(QDialog):
         lay.setSpacing(12)
         lay.addWidget(Label(heading, "DialogTitle"))
         lay.addWidget(Label(note, "Small", wrap=True))
+        if heading == "sudo-Passwort eingeben":
+            lay.addWidget(Label("▲  Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko.", "Warn", wrap=True))
         self.entry = LineEdit()
         self.entry.setEchoMode(QLineEdit.Password)
         self.entry.setMinimumHeight(42)
@@ -1375,6 +1715,8 @@ class PrivilegeManager:
     def ensure(self, parent=None):
         """Blockiert kurz (GUI-Thread!) und zeigt bei Bedarf den Passwort-
         Dialog. Gibt True zurück, wenn eine gültige sudo-Sitzung besteht."""
+        if not ask_alpha_consent(parent or self.root):
+            return False
         if self.is_authenticated():
             self._notify(True)
             return True
@@ -3135,15 +3477,26 @@ class SwapTab(Page):
             return
         if not self.app.priv.ensure(self):
             return
+        err = swap_path_problem(path)
+        if err:
+            show_warning(self, "Swapfile", err)
+            return
 
         p = shlex.quote(path)
+        fs = subprocess.run(["findmnt", "-n", "-o", "FSTYPE", "--target", os.path.dirname(path)],
+                            capture_output=True, text=True).stdout.strip()
+        if fs == "btrfs":
+            # btrfs braucht eine Datei ohne Copy-on-Write – das erledigt btrfs selbst
+            make = f"rm -f -- {p} && btrfs filesystem mkswapfile --size {size}g {p}"
+        else:
+            make = (f"rm -f -- {p} && (fallocate -l {size}G {p} || dd if=/dev/zero of={p} bs=1M "
+                    f"count=$(({size}*1024)) status=progress) && chmod 600 {p} && mkswap {p}")
         script = (
             f"swapoff {p} 2>/dev/null; "
-            f"fallocate -l {size}G {p} || dd if=/dev/zero of={p} bs=1M count=$(({size}*1024)) status=progress; "
-            f"chmod 600 {p} && "
-            f"mkswap {p} && "
+            f"{make} && "
             f"swapon {p} && "
-            f"(grep -qF {p} /etc/fstab || echo '{path} none swap defaults 0 0' >> /etc/fstab)"
+            f"(awk -v p={p} '$1==p {{f=1}} END {{exit !f}}' /etc/fstab || "
+            f"echo {shlex.quote(path + ' none swap defaults 0 0')} >> /etc/fstab)"
         )
         self._run_root(script)
 
@@ -3167,7 +3520,14 @@ class SwapTab(Page):
         p = shlex.quote(path)
         script = f"swapoff {p}"
         if self.cb_remove.isChecked():
-            script += f"; rm -f {p}; grep -vF {p} /etc/fstab > /etc/fstab.tmp; mv /etc/fstab.tmp /etc/fstab"
+            err = swap_path_problem(path, must_exist=True)
+            if err:
+                show_warning(self, "Swapfile", err + "\n\nEs wird nur deaktiviert, nichts gelöscht.")
+            else:
+                # nur die fstab-Zeile, deren erstes Feld genau dieser Pfad ist; Sicherung als fstab.tuxdex.bak
+                script += (f" && rm -f -- {p} && cp -a /etc/fstab /etc/fstab.tuxdex.bak && "
+                           f"awk -v p={p} '$1!=p' /etc/fstab > /etc/fstab.tuxdex.tmp && "
+                           "cat /etc/fstab.tuxdex.tmp > /etc/fstab && rm -f /etc/fstab.tuxdex.tmp")
         self._run_root(script)
 
     def _run_root(self, script):
@@ -3315,7 +3675,7 @@ CHECK_TOOLS = {
     "exfat": ["fsck.exfat", "-n"], "ntfs": ["ntfsfix", "-n"], "xfs": ["xfs_repair", "-n"],
 }
 
-LABEL_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,255}$")
+LABEL_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9 _.-]{0,254}$")   # nie mit „-“ beginnen (sonst Option)
 
 
 def _mounts(node):
@@ -3323,6 +3683,31 @@ def _mounts(node):
     if mps is None:
         mps = [node.get("mountpoint")]
     return [m for m in mps if m]
+
+
+def format_blockers(dev):
+    """Gründe, warum dev jetzt nicht formatiert werden darf: eingehängte oder aktive Teile darunter
+    (Partitionen, geöffnete LUKS-Container, LVM, Swap) oder das Laufwerk des laufenden Systems."""
+    try:
+        data = json.loads(subprocess.run(["lsblk", "-J", "-o", "PATH,TYPE,FSTYPE,MOUNTPOINTS", dev],
+                                         capture_output=True, text=True, timeout=10).stdout or "{}")
+    except Exception:
+        return [f"{dev} konnte nicht geprüft werden (lsblk)."]
+    out, stack = [], list(data.get("blockdevices", []))
+    if not stack:
+        return [f"{dev} wurde nicht gefunden."]
+    swaps = {l.split()[0] for l in _read("/proc/swaps").splitlines()[1:] if l.split()}
+    while stack:
+        n = stack.pop()
+        stack += n.get("children") or []
+        mps = [m for m in (n.get("mountpoints") or []) if m]
+        if mps:
+            out.append(f"{n['path']} ist eingehängt ({', '.join(mps)})")
+        if n.get("path") in swaps:
+            out.append(f"{n['path']} wird als Swap benutzt")
+        if n.get("path") != dev and n.get("type") in ("crypt", "lvm", "raid1", "raid0", "raid5", "raid10"):
+            out.append(f"{n['path']} ist geöffnet/aktiv ({n['type']})")
+    return out
 
 
 def _all_mounts(node):
@@ -3377,7 +3762,8 @@ class FormatDialog(QDialog):
         lay.addWidget(Label("Datenträger formatieren", "DialogTitle"))
         lay.addWidget(Label(f"✕  Alle Daten auf {dev} ({size}) werden unwiderruflich gelöscht.", "Danger", wrap=True))
         self.fs = QComboBox()
-        self.fs.addItems(list(FORMATS))
+        for k in FORMATS:
+            self.fs.addItem(k, k)          # Schlüssel als Daten – der sichtbare Text wird ggf. übersetzt
         self.fs.setMinimumHeight(38)
         lay.addLayout(Field("Dateisystem", self.fs))
         self.label = LineEdit(placeholder="optional, z. B. USB-Stick", mono=True)
@@ -3396,7 +3782,7 @@ class FormatDialog(QDialog):
         self._limit()
 
     def _limit(self):
-        self.label.setMaxLength(FORMATS[self.fs.currentText()][1])
+        self.label.setMaxLength(FORMATS[self.fs.currentData()][1])
 
 
 class DisksTab(Page):
@@ -3756,15 +4142,16 @@ class DisksTab(Page):
         dlg = FormatDialog(self, n["path"], name, fmt_bytes(n.get("size")))
         if dlg.exec() != QDialog.Accepted or dlg.confirm.text().strip() != name:
             return
-        builder, maxlen, pkg = FORMATS[dlg.fs.currentText()]
+        builder, maxlen, pkg = FORMATS[dlg.fs.currentData()]
         label = dlg.label.text().strip()
         if label and not LABEL_RE.match(label):
             show_warning(self, "Ungültige Bezeichnung", "Erlaubt sind Buchstaben, Ziffern, Leerzeichen und _ . -")
             return
-        # Sicherheitsnetz: direkt vor dem Formatieren noch einmal prüfen, ob etwas eingehängt ist
-        r = subprocess.run(["findmnt", "-rn", "-S", n["path"]], capture_output=True, text=True)
-        if r.stdout.strip():
-            show_error(self, "Noch eingehängt", f"{n['path']} ist eingehängt. Bitte zuerst aushängen.")
+        # Sicherheitsnetz: direkt vor dem Formatieren alles darunter prüfen (auch Partitionen, LUKS, Swap)
+        blockers = format_blockers(n["path"])
+        if blockers:
+            show_error(self, "Formatieren nicht möglich", "\n".join(blockers) + "\n\nBitte erst aushängen bzw. "
+                       "schließen.")
             return
         cmd = builder(n["path"], label)
         if self._need_tool(cmd[0], pkg):
@@ -7890,6 +8277,11 @@ class AntivirusTab(Page):
             qname = f"{int(time.time() * 1000)}_{os.path.basename(f['path'])}"
             dest = os.path.join(QUARANTINE_DIR, qname)
             try:
+                try:
+                    st = os.lstat(f["path"])
+                    owner = [st.st_uid, st.st_gid, st.st_mode & 0o7777]
+                except OSError:
+                    owner = None
                 if f in root_items:
                     r = subprocess.run(["sudo", "-n", "bash", "-c",
                                         f"mv -- {shlex.quote(f['path'])} {shlex.quote(dest)} && "
@@ -7901,7 +8293,7 @@ class AntivirusTab(Page):
                     shutil.move(f["path"], dest)
                     os.chmod(dest, 0o400)
                 index[qname] = {"orig": f["path"], "threat": f["threat"], "at": time.time(),
-                                "root": f in root_items}
+                                "root": f in root_items, "owner": owner}
                 f["status"] = "in Quarantäne"
                 self.log.append_text(f"In Quarantäne: {f['path']}\n")
             except Exception as e:
@@ -7979,7 +8371,16 @@ class AntivirusTab(Page):
                 if v.get("root") or self._needs_root(v["orig"]):
                     if not self.app.priv.ensure(self):
                         return
-                    r = subprocess.run(["sudo", "-n", "mv", "-n", "--", src, v["orig"]], capture_output=True, text=True)
+                    orig = v["orig"]
+                    if not os.path.isabs(orig) or os.path.normpath(orig) != orig or os.path.lexists(orig):
+                        raise OSError("ungültiger Zielpfad oder am Zielort existiert bereits eine Datei")
+                    # Besitzer und Rechte wie vor der Quarantäne; ohne Angabe: root, nicht ausführbar
+                    own = v.get("owner") if isinstance(v.get("owner"), list) and len(v["owner"]) == 3 else None
+                    uid_, gid_, mode_ = (int(own[0]), int(own[1]), int(own[2]) & 0o777) if own else (0, 0, 0o644)
+                    q = shlex.quote
+                    r = subprocess.run(["sudo", "-n", "sh", "-c",
+                                        f"mv -n -T -- {q(src)} {q(orig)} && chown -h {uid_}:{gid_} -- {q(orig)} && "
+                                        f"chmod {mode_:o} -- {q(orig)}"], capture_output=True, text=True)
                     if r.returncode != 0:
                         raise OSError(r.stderr.strip())
                 else:
@@ -9652,6 +10053,7 @@ class SecurityTab(Page):
 
     def _mv_show(self, r):
         self.mv_loading = False
+        self.mv_connected = False
         installed = r["installed"]
         daemon = r.get("daemon", False)
         self.mv_setup.setVisible(not (installed and daemon))
@@ -9676,6 +10078,7 @@ class SecurityTab(Page):
         first = st.splitlines()[0].strip().lower() if st else ""
         if first.startswith("connected"):
             self.mv_badge.set("ok", "Verbunden")
+            self.mv_connected = True
             self.b_connect.hide()
             self.b_disconnect.show()
             self.b_reconnect.show()
@@ -9817,7 +10220,7 @@ class SecurityTab(Page):
             args = ["relay", "set", "location", "any"]
         else:
             args = ["relay", "set", "location", c] + ([city] if city else [])
-        connected = self.mv_badge.text().endswith("Verbunden")
+        connected = getattr(self, "mv_connected", False)
         self._mv_action(args, then=(lambda rc: rc == 0 and connected and
                                     self._mv_action(["reconnect"], wait=True)))
 
@@ -11455,7 +11858,12 @@ def load_settings():
 
 
 def save_settings(s):
-    _save_json(SETTINGS_FILE, s)
+    cur = _load_json(SETTINGS_FILE, {})
+    cur.update(s)
+    for k in ("alpha_accepted", "alpha_version"):      # Zustimmung nie durch einen älteren Stand überschreiben
+        if k in _load_json(SETTINGS_FILE, {}):
+            cur[k] = _load_json(SETTINGS_FILE, {})[k]
+    _save_json(SETTINGS_FILE, cur)
 
 
 def normalize_repo(text):
@@ -12103,6 +12511,16 @@ class UpdatePanel(QWidget):
 
 
 class SettingsPage(Page):
+    def _lang_changed(self, _=0):
+        code = self.cb_lang.currentData()
+        st = load_settings()
+        st["lang"] = code
+        save_settings(st)
+        self.update_panel.settings["lang"] = code
+        if code != LANG and ask_confirm(self, "Sprache · Language", "Tuxdex jetzt neu starten, damit die Sprache "
+                                        "wechselt?\n\nRestart Tuxdex now to switch the language?", "Neu starten"):
+            self.app.restart()
+
     def _sys_changed(self, on):
         st = load_settings()
         st["sys_check_on_start"] = on
@@ -12123,6 +12541,20 @@ class SettingsPage(Page):
                                   "installiert wird erst, wenn du im Tab „Updates“ auf „Update starten“ klickst.",
                                   "Hint", wrap=True))
         self.lay.addWidget(sysp)
+        langp = Panel("Sprache · Language")
+        lrow = QHBoxLayout()
+        self.cb_lang = QComboBox()
+        self.cb_lang.setMinimumHeight(38)
+        self.cb_lang.setMinimumWidth(220)
+        for text, code in (("Deutsch", "de"), ("English", "en")):
+            self.cb_lang.addItem(text, code)
+        self.cb_lang.setCurrentIndex(0 if LANG == "de" else 1)
+        self.cb_lang.currentIndexChanged.connect(self._lang_changed)
+        lrow.addWidget(self.cb_lang)
+        lrow.addStretch(1)
+        langp.body.addLayout(lrow)
+        langp.body.addWidget(Label("Wirkt nach einem Neustart von Tuxdex.", "Hint", wrap=True))
+        self.lay.addWidget(langp)
         self.update_panel = UpdatePanel(app)
         self.lay.addWidget(self.update_panel)
 
@@ -12298,6 +12730,10 @@ class MainWindow(QWidget):
         tl.addWidget(logo)
         tl.addSpacing(4)
         tl.addWidget(Label("Tuxdex", "AppTitle"))
+        self.alpha_badge = StatusBadge("warn", "ALPHA")
+        self.alpha_badge.setToolTip("Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko. "
+                                    "Vor der ersten root-Aktion fragt Tuxdex einmal nach deiner Zustimmung.")
+        tl.addWidget(self.alpha_badge)
         tl.addStretch(1)
         self.auth_badge = StatusBadge("off", "Nicht angemeldet")
         tl.addWidget(self.auth_badge)
@@ -12606,10 +13042,1589 @@ class MainWindow(QWidget):
         self.status.setText(text)
 
 
+# --------------------------------------------------------------------------
+# Englischer Katalog: deutscher Oberflächentext → englisch. {} = eingesetzter Wert.
+# Pflege: python3 tools/i18n_extract.py zeigt fehlende Einträge.
+# --------------------------------------------------------------------------
+
+EN = {
+    '$ sudo systemctl restart clamav-freshclam\nDer Dienst clamav-freshclam läuft bereits und lädt die Signaturen selbst.\nNeustart löst sofort eine Prüfung aus – der erste Download (~200 MB) kann einige Minuten dauern.': '$ sudo systemctl restart clamav-freshclam\nThe clamav-freshclam service is already running and loads the signatures itself.\nA restart triggers a check immediately – the first download (~200 MB) can take a few minutes.',
+    '$ {}{}\n(Nur Funde, Warnungen und die Zusammenfassung werden hier angezeigt.)': '$ {}{}\n(Only findings, warnings and the summary are shown here.)',
+    "'{}' ist nicht installiert.\n\nsudo pacman -S {}": "'{}' is not installed.\n\nsudo pacman -S {}",
+    '(Dienst-Meldungen nicht lesbar – bitte oben rechts anmelden)': '(service messages not readable – please log in at the top right)',
+    '(in 4-GB-Teilen wegen FAT32)': '(in 4 GB parts because of FAT32)',
+    '(noch {} Tage)': '({} days left)',
+    '(ohne root – evtl. zu wenig)': '(without root – possibly too little)',
+    '(Paket {})': '(package {})',
+    '(verschlüsselt).': '(encrypted).',
+    '({} Prozesse).': '({} processes).',
+    ') – warte auf das Ergebnis …': ') – waiting for the result …',
+    ', {} wichtig': ', {} important',
+    '.\n\nBeim Schließen wird das abgebrochen.': '.\n\nClosing will cancel it.',
+    '. Details: systemctl status NAME.': '. Details: systemctl status NAME.',
+    '. Einspielen mit: fwupdmgr update': '. Install with: fwupdmgr update',
+    '. Empfohlen: none für NVMe, mq-deadline für SSD, bfq für Festplatten.': '. Recommended: none for NVMe, mq-deadline for SSD, bfq for hard disks.',
+    '. Jedes Programm unter deinem Benutzer kann diese Befehle als root ausführen – nur behalten, wenn nötig (visudo).': '. Every program running as your user can run these commands as root – only keep them if needed (visudo).',
+    '. Manche Seiten zeigen dann Captchas.': '. Some sites will then show captchas.',
+    '. Pakete werden dann nicht auf Echtheit geprüft – dort auf „Required DatabaseOptional“ zurückstellen.': '. Packages are then not checked for authenticity – set it back to “Required DatabaseOptional” there.',
+    '. Programme schicken ihren Verkehr über diesen Proxy.': '. Programs send their traffic through this proxy.',
+    '. Prüfen, ob das dein gewollter DNS-Dienst ist.': '. Check whether this is your intended DNS service.',
+    '. Sperrt den Kernel-Austausch im laufenden Betrieb (kexec) und SysRq-Tastenkürzel und verbirgt Kernel-Meldungen (dmesg) und -Adressen vor normalen Programmen – im Alltag ohne Nachteile.': '. Blocks replacing the kernel at runtime (kexec) and SysRq shortcuts and hides kernel messages (dmesg) and addresses from normal programs – no downside in daily use.',
+    '. Tuxdex zeigt sie nicht an – bitte selbst prüfen und löschen.': ". Tuxdex doesn't show them – please check and delete them yourself.",
+    '/ {} GHz': '/ {} GHz',
+    '/tmp im Arbeitsspeicher': '/tmp in RAM',
+    '/tmp liegt auf der Platte. Arch nutzt normalerweise tmpfs (tmp.mount) – prüfen, ob /etc/fstab das überschreibt.': '/tmp is on disk. Arch normally uses tmpfs (tmp.mount) – check whether /etc/fstab overrides it.',
+    '/tmp liegt im Arbeitsspeicher – schnell und nach Neustart leer.': '/tmp is in RAM – fast and empty after a restart.',
+    '0 ms': '0 ms',
+    '16-stellige Kontonummer': '16-digit account number',
+    '32-Bit-Programme': '32-bit programs',
+    '<b>Freigegeben</b> = aus dem Netz erreichbar. <b>Gesperrt</b> = die Firewall blockt Verbindungen von außen; das Programm läuft trotzdem weiter.': '<b>Allowed</b> = reachable from the network. <b>Blocked</b> = the firewall blocks connections from outside; the program keeps running anyway.',
+    '<b>Tuxdex {} ist verfügbar</b> – installiert ist {}.': '<b>Tuxdex {} is available</b> – installed is {}.',
+    '<b>Version {}</b>': '<b>Version {}</b>',
+    '<br>Installiert: <b>{}</b> ({})': '<br>Installed: <b>{}</b> ({})',
+    '<span style="color:{}">ClamAV ist nicht installiert. Tuxdex funktioniert auch ohne. Sobald ClamAV auf dem System vorhanden ist, lässt es sich hier bedienen.</span>': '<span style="color:{}">ClamAV is not installed. Tuxdex also works without it. As soon as ClamAV is on the system, it can be used here.</span>',
+    '<span style="color:{}">Nach dem Update ist ein Neustart nötig ({}).</span>': '<span style="color:{}">A restart is needed after the update ({}).</span>',
+    '<span style="color:{}">Tipp: Automatische Updates halten die Signaturen täglich aktuell (Dienst clamav-freshclam).</span>': '<span style="color:{}">Tip: automatic updates keep the signatures up to date daily (service clamav-freshclam).</span>',
+    '<span style="color:{}">▲ Major-Updates: {} – vorher die Arch-News lesen (archlinux.org/news).</span>': '<span style="color:{}">▲ Major updates: {} – read the Arch news first (archlinux.org/news).</span>',
+    '<span style="color:{}">▲ Nicht über Mullvad – Webseiten sehen diese Adresse.</span>': '<span style="color:{}">▲ Not via Mullvad – websites see this address.</span>',
+    '<span style="color:{}">▲ nicht über Mullvad</span>': '<span style="color:{}">▲ not via Mullvad</span>',
+    '<span style="color:{}">▲ Ohne aktive Firewall sind alle Ports unten aus dem Netz erreichbar.</span> Nach dem Aktivieren sind sie gesperrt und du kannst jeden einzeln per Knopf freigeben.': '<span style="color:{}">▲ Without an active firewall, all ports below are reachable from the network.</span> After enabling it they are blocked and you can allow each one with a button.',
+    '<span style="color:{}">▲ System-Pakete: {}</span>': '<span style="color:{}">▲ System packages: {}</span>',
+    '<span style="color:{}">● Dein Verkehr läuft über Mullvad ({}).</span>': '<span style="color:{}">● Your traffic goes through Mullvad ({}).</span>',
+    '<span style="color:{}">● über Mullvad-VPN</span>': '<span style="color:{}">● via Mullvad VPN</span>',
+    '<span style="color:{}">✕ Es sind noch keine Virensignaturen geladen –': '<span style="color:{}">✕ No virus signatures loaded yet –',
+    '<span style="color:{}">✕ Kernel aktualisiert – bitte neu starten (sonst werden z. B. USB-Sticks nicht erkannt).</span>': '<span style="color:{}">✕ Kernel updated – please restart (otherwise e.g. USB sticks won\'t be detected).</span>',
+    '== AUR ==\nparu nicht installiert.': '== AUR ==\nparu not installed.',
+    '== Flatpak ==\nflatpak nicht installiert.': '== Flatpak ==\nflatpak not installed.',
+    '== Pacman ==\ncheckupdates (Paket pacman-contrib) nicht installiert.': '== Pacman ==\ncheckupdates (package pacman-contrib) not installed.',
+    '[Abgebrochen]': '[Cancelled]',
+    '[Exit-Code {}]': '[Exit code {}]',
+    '[{}] Alte Version entfernt: {}': '[{}] Old version removed: {}',
+    '[{}] Prüfung fehlgeschlagen: {}': '[{}] Verification failed: {}',
+    'Abbrechen': 'Cancel',
+    'Abgebrochen': 'Cancelled',
+    'Abgebrochen – Admin-Rechte nötig': 'Cancelled – admin rights needed',
+    'Abgebrochen: Der Alpha-Hinweis wurde nicht bestätigt – keine Aktion mit root-Rechten.': 'Cancelled: the alpha notice was not confirmed – no action with root rights.',
+    'Abgeschaltet': 'Disabled',
+    'abgeschlossen': 'finished',
+    'Abgestürzte Programme hinterlassen keine Speicherabbilder.': "Crashed programs don't leave memory dumps.",
+    'Abhängigkeiten, die nichts mehr braucht': 'Dependencies nothing needs anymore',
+    'Abmelden': 'Log out',
+    'Abschalten': 'Turn off',
+    'Abschluss-Hooks …': 'Final hooks …',
+    'Achtung, Major-Updates:': 'Attention, major updates:',
+    'Admin-Rechte nötig': 'Admin rights needed',
+    'Administrator-Passwort': 'Administrator password',
+    'Adress-Zufall (ASLR)': 'Address randomization (ASLR)',
+    'Akku': 'Battery',
+    'Akkubetrieb': 'On battery',
+    'Aktion': 'Action',
+    'Aktionen mit root-Rechten': 'Actions with root rights',
+    'Aktiv': 'Active',
+    'Aktiv · nächster Lauf: {}': 'Active · next run: {}',
+    'Aktiv · {} GiB': 'Active · {} GiB',
+    'Aktive Zeit': 'Active time',
+    'Aktive Zeit = Anteil der Zeit, in der das Laufwerk beschäftigt war. Werte seit dem Systemstart.': 'Active time = share of time the drive was busy. Values since system start.',
+    'Aktivieren': 'Enable',
+    'aktiviert': 'enabled',
+    'Aktualisieren': 'Refresh',
+    'Aktualisieren (mit Login-Zeiten)': 'Refresh (with login times)',
+    'Aktualisiert': 'Updated',
+    'Aktualisierung': 'Updating',
+    'Aktualisierung fehlgeschlagen': 'Update failed',
+    'Aktuell': 'Up to date',
+    'Aktuelle Swappiness: {}': 'Current swappiness: {}',
+    'Aktueller Status': 'Current status',
+    'Akzeptieren': 'Accept',
+    'alle': 'all',
+    'alle Apps': 'all apps',
+    'Alle Apps': 'All apps',
+    'Alle beenden': 'End all',
+    'Alle Dateien': 'All files',
+    'Alle Dienste laufen.': 'All services are running.',
+    'Alle DNS-Anfragen laufen über das VPN.': 'All DNS requests go through the VPN.',
+    'Alle eigenen Rechte-Einstellungen für {} entfernen?\nDanach gelten wieder die Voreinstellungen der App.': "Remove all your own permission settings for {}?\nAfterwards the app's defaults apply again.",
+    'Alle erzwingen': 'Force all',
+    'Alle Geräte': 'All devices',
+    'Alle gespeicherten Freigaben (Kamera, Ort, Bildschirm …) dieser App vergessen': 'Forget all saved permissions (camera, location, screen …) of this app',
+    'Alle Pakete (inkl. Abhängigkeiten)': 'All packages (incl. dependencies)',
+    'Alle Prozesse': 'All processes',
+    'Alle sichtbaren auswählen': 'Select all visible',
+    'Alle {} Bereiche gemessen · Dauer {}:{}': 'All {} areas measured · duration {}:{}',
+    'allen Apps': 'all apps',
+    'Alles gut': 'All good',
+    'Alles in Ordnung': 'All good',
+    'Alles neu prüfen': 'Check everything again',
+    'Alpha-Hinweis nicht bestätigt – keine root-Aktion.': 'Alpha notice not confirmed – no root action.',
+    'Alpha-Version – Hinweis': 'Alpha version – notice',
+    'Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko. Vor der ersten root-Aktion fragt Tuxdex einmal nach deiner Zustimmung.': 'Alpha version: actions with root rights at your own risk. Before the first root action, Tuxdex asks once for your consent.',
+    'als Abhängigkeit': 'as dependency',
+    'als Paket (pacman)': 'as package (pacman)',
+    'als Paket installiert': 'installed as package',
+    'als Skript': 'as script',
+    'als Skript gestartet': 'started as script',
+    'Alte Kernel-Module': 'Old kernel modules',
+    'Alte Paketversionen aus dem Pacman-Cache löschen?': 'Delete old package versions from the pacman cache?',
+    'Alte Versionen löschen': 'Delete old versions',
+    'Alter Vorgang läuft noch': 'Old operation still running',
+    'am Zielort existiert bereits eine Datei': 'a file already exists at the target',
+    'am.i.mullvad.net nicht erreichbar (': 'am.i.mullvad.net not reachable (',
+    'am.i.mullvad.net nicht erreichbar ({}).': 'am.i.mullvad.net not reachable ({}).',
+    'An': 'On',
+    'An Originalort zurückspielen': 'Restore to original location',
+    'An Originalort zurückspielen …': 'Restore to original location …',
+    'Analyse von {} fertig.': 'Analysis of {} finished.',
+    'Analysiere {} … (kann bei großen Platten etwas dauern)': 'Analyzing {} … (may take a while on large drives)',
+    'Analysiere …': 'Analyzing …',
+    'Analysieren': 'Analyze',
+    'Anfragen laufen durch den VPN-Tunnel.': 'Requests go through the VPN tunnel.',
+    'Anfragen laufen verschlüsselt (DNS-over-TLS).': 'Requests are encrypted (DNS-over-TLS).',
+    'Anfragen sind unverschlüsselt – der Netzbetreiber kann sehen, welche Seiten du aufrufst.': 'Requests are unencrypted – the network operator can see which sites you visit.',
+    'angehalten': 'stopped',
+    'Angemeldet – sudo-Sitzung aktiv': 'Logged in – sudo session active',
+    'Angemeldet – sudo-Sitzung aktiv.': 'Logged in – sudo session active.',
+    'Angemeldet.': 'Logged in.',
+    'angeschlossen': 'connected',
+    'Anklicken für Details': 'Click for details',
+    'Anlegen': 'Create',
+    'Anmelden': 'Log in',
+    'Anpassen': 'Adjust',
+    'Antivirus (ClamAV)': 'Antivirus (ClamAV)',
+    'Anzeige & Ton': 'Display & sound',
+    'Anzeigen': 'Show',
+    'App beenden und neu starten – damit geänderte Rechte gelten': 'Quit and restart the app – so changed permissions take effect',
+    'App suchen …': 'Search app …',
+    'AppArmor ist nicht aktiv. Sinnvoll für Server oder erhöhten Schutzbedarf; braucht einen Kernel-Parameter (lsm=…,apparmor) und das Paket apparmor.': 'AppArmor is not active. Useful for servers or higher protection needs; requires a kernel parameter (lsm=…,apparmor) and the apparmor package.',
+    'AppArmor schränkt ein, worauf einzelne Programme zugreifen dürfen.': 'AppArmor restricts what individual programs may access.',
+    'Arbeitet – seit {}:{} keine Meldung': 'Working – no message for {}:{}',
+    'Arbeitsspeicher': 'Memory',
+    'arch-audit konnte die Sicherheitsdatenbank nicht abrufen (keine Internetverbindung?).': "arch-audit couldn't fetch the security database (no internet connection?).",
+    'Archiv': 'Archive',
+    'Archiv ungültig': 'Invalid archive',
+    'Archiv-Passwort': 'Archive password',
+    'Auf 200 MB kürzen': 'Shrink to 200 MB',
+    'Auf 500 MB / 1 Monat': 'To 500 MB / 1 month',
+    'Auf GitHub ist Version {} – du bist auf dem neuesten Stand.': "GitHub has version {} – you're up to date.",
+    'Auf Updates prüfen': 'Check for updates',
+    'Aufräumen': 'Clean up',
+    'AUR (paru nicht installiert)': 'AUR (paru not installed)',
+    'AUR / Fremd-Pakete': 'AUR / foreign packages',
+    'AUR / lokal': 'AUR / local',
+    'AUR-Build-Cache (paru)': 'AUR build cache (paru)',
+    'Aus': 'Off',
+    'Aus Datei …': 'From file …',
+    'Aus einer früheren Tuxdex-Sitzung laufen noch im Hintergrund:': 'Still running in the background from an earlier Tuxdex session:',
+    'Aus Ordner …': 'From folder …',
+    'aus Umgebungsvariablen': 'from environment variables',
+    'Ausführen': 'Run',
+    'Ausgabe': 'Output',
+    'Ausgewogen': 'Balanced',
+    'Ausgewählte entfernen': 'Remove selected',
+    'Ausgewählte löschen': 'Delete selected',
+    'Aushängen': 'Unmount',
+    'Auslastung': 'Utilization',
+    'Auswahl deinstallieren': 'Uninstall selection',
+    'Authentifizierung fehlgeschlagen: {}': 'Authentication failed: {}',
+    'Automatisch': 'Automatic',
+    'Automatisch sichern': 'Back up automatically',
+    'Automatische Updates': 'Automatic updates',
+    'Automatische Updates aktivieren': 'Enable automatic updates',
+    'Autor': 'Author',
+    'Autostart-Programme': 'Autostart programs',
+    'Backend: {}': 'Backend: {}',
+    'Backup abbrechen': 'Cancel backup',
+    'Backup fertig': 'Backup finished',
+    'Backup löschen': 'Delete backup',
+    'Backup mit Problemen': 'Backup with problems',
+    'Backup starten': 'Start backup',
+    'Backup vom {} an den ursprünglichen Ort zurückschreiben?\n\nGleichnamige Dateien werden durch den Stand aus dem Backup ersetzt. Dateien, die es im Backup nicht gibt, bleiben erhalten.': "Write the backup from {} back to the original location?\n\nFiles with the same name are replaced by the version from the backup. Files that aren't in the backup are kept.",
+    'Backup vom {} endgültig löschen?': 'Permanently delete the backup from {}?',
+    'Backup-Ziel wählen': 'Choose backup target',
+    'Backups liegen auf dem Ziel im Ordner {}/{}/.': 'Backups are stored on the target in the folder {}/{}/.',
+    'bash.ws hat keine DNS-Anfrage empfangen.': "bash.ws didn't receive a DNS request.",
+    'bash.ws nicht erreichbar (': 'bash.ws not reachable (',
+    'bash.ws nicht erreichbar ({}).': 'bash.ws not reachable ({}).',
+    'Basisgeschwindigkeit': 'Base speed',
+    'Baue Paket …': 'Building package …',
+    'Bauen fehlgeschlagen': 'Build failed',
+    'Beenden': 'End',
+    'beenden': 'end',
+    'beendet': 'ended',
+    'beendet.': 'ended.',
+    'Befehl': 'Command',
+    'Begrenzen': 'Limit',
+    'Begrenzt': 'Limited',
+    'behält die 2 neuesten Versionen je Paket': 'keeps the 2 newest versions per package',
+    'Bei Abstürzen keine Speicherabbilder mehr speichern und vorhandene löschen?\n\nEntwickler brauchen sie manchmal zur Fehlersuche. Wird in {} gespeichert.': 'Stop saving memory dumps on crashes and delete existing ones?\n\nDevelopers sometimes need them for debugging. Saved in {}.',
+    'Bei Abstürzen landet der Arbeitsspeicher des Programms auf der Platte – darin können Passwörter stehen.': 'When a program crashes, its memory ends up on disk – it may contain passwords.',
+    'Beim Start automatisch nach System-Updates suchen (pacman, AUR, Flatpak)': 'Check for system updates automatically at startup (pacman, AUR, Flatpak)',
+    'Beim Start automatisch nach Updates suchen': 'Check for updates automatically at startup',
+    'Beim Systemstart automatisch verbinden': 'Connect automatically at system start',
+    'Beim Update am {} gab es Fehler oder Warnungen (z. B. .pacnew-Dateien, fehlgeschlagene Hooks).': 'The update on {} had errors or warnings (e.g. .pacnew files, failed hooks).',
+    'Bekannte Lücken ohne verfügbares Update: {}. Nichts zu tun – der Fix kommt mit einem späteren Update.': 'Known vulnerabilities without an available update: {}. Nothing to do – the fix will come with a later update.',
+    'Bekannte Sicherheitslücken': 'Known vulnerabilities',
+    'Belegt': 'Used',
+    'Belegt: {}. Ohne Grenze darf das Protokoll bis zu 10 % der Partition nutzen und hält Einträge sehr lange.': 'Used: {}. Without a limit the log may use up to 10 % of the partition and keeps entries for a very long time.',
+    'Belegung': 'Usage',
+    'Belegung je Festplatte, größte Ordner, Aufräumen': 'Usage per drive, largest folders, cleanup',
+    'Belegung je Gerät': 'Usage per device',
+    'Beliebig (schnellster)': 'Any (fastest)',
+    'Beliebige Stadt': 'Any city',
+    'Benutzer': 'Users',
+    'Benutzer-Cache (~/.cache)': 'User cache (~/.cache)',
+    'benutzer/tuxdex oder GitHub-Link': 'user/tuxdex or GitHub link',
+    'Benutzergruppen': 'User groups',
+    'Benutzerkonten und letzte Anmeldung': 'User accounts and last login',
+    'Berechne …': 'Calculating …',
+    'Bereit': 'Ready',
+    'Bereit.': 'Ready.',
+    'Beschreibung': 'Description',
+    'Bestätigen': 'Confirm',
+    'Beta verwenden': 'Use beta',
+    'Beta {} installiert': 'Beta {} installed',
+    'Beta-Versionen': 'Beta versions',
+    'Beta-Versionen aktiv.': 'Beta versions active.',
+    'Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler haben.\n\nZurück zur Vollversion geht jederzeit hier.': 'Beta versions get new features earlier but may still have bugs.\n\nYou can switch back to the full version here at any time.',
+    'Betriebssystem': 'Operating system',
+    'Betriebszeit': 'Uptime',
+    'Bezeichnung': 'Label',
+    'Bilder': 'Pictures',
+    'Bildschirmfreigabe (VNC)': 'Screen sharing (VNC)',
+    'Bildschirmsperre': 'Screen lock',
+    'Bitte eine Regel in der Liste auswählen.': 'Please select a rule in the list.',
+    'Bitte einen einfachen absoluten Pfad (keine Leerzeichen/Sonderzeichen) und eine positive Größe in GB angeben.': 'Please enter a simple absolute path (no spaces/special characters) and a positive size in GB.',
+    'Bitte einen einfachen absoluten Pfad angeben (ohne Leerzeichen, „..“ oder doppelte /).': 'Please enter a simple absolute path (no spaces, “..” or double /).',
+    'Bitte einen gültigen Pfad angeben.': 'Please enter a valid path.',
+    'Bitte einen Pfad wie ~/Spiele oder /mnt/daten angeben.': 'Please enter a path like ~/Games or /mnt/data.',
+    'Bitte einen Port (z. B. 22) oder Bereich (8000:8100) angeben.': 'Please enter a port (e.g. 22) or range (8000:8100).',
+    'Bitte erst aushängen bzw. schließen.': 'Please unmount or close it first.',
+    'Bitte gültige(n) Paketnamen eingeben (Leerzeichen-getrennt für mehrere).': 'Please enter valid package name(s) (space-separated for several).',
+    'Bitte mindestens ein angeschlossenes Ziel anhaken.': 'Please check at least one connected target.',
+    'Bitte mindestens eine Quelle auswählen.': 'Please select at least one source.',
+    'Bitte mindestens einen Ordner zum Sichern hinzufügen.': 'Please add at least one folder to back up.',
+    'Bitte zuerst ein Backup in der Liste auswählen.': 'Please select a backup in the list first.',
+    'Bitte zuerst ein Ziel hinzufügen.': 'Please add a target first.',
+    'Bitte „benutzer/repo“ oder einen GitHub-Link angeben.': 'Please enter “user/repo” or a GitHub link.',
+    'Blockiert': 'Blocked',
+    'Bootzeit': 'Boot time',
+    'Browser, Thumbnail-Vorschauen, Spiele-Launcher und viele andere Programme legen in ~/.cache Zwischendaten ab. Löschen ist grundsätzlich möglich – die Programme bauen den Cache neu auf.\n\nTuxdex zeigt hier nur die Größe, weil laufende Programme beim Löschen durcheinanderkommen können. Welcher Ordner groß ist, siehst du oben in der Speicher-Übersicht.': 'Browsers, thumbnail previews, game launchers and many other programs store temporary data in ~/.cache. Deleting it is generally possible – the programs rebuild the cache.\n\nTuxdex only shows the size here because running programs can get confused when it is deleted. Which folder is large is shown above in the storage overview.',
+    'btrfs (Linux)': 'btrfs (Linux)',
+    'Btrfs-Snapshots vor Updates': 'Btrfs snapshots before updates',
+    'Checkliste: Wartung, Datenschutz & Performance': 'Checklist: maintenance, privacy & performance',
+    'Chipkartenleser, z. B. für den Personalausweis.': 'Smart card readers, e.g. for ID cards.',
+    'ClamAV ist installiert, aber ohne Virensignaturen.': 'ClamAV is installed, but without virus signatures.',
+    'ClamAV ist optional – Tuxdex funktioniert auch ohne.': 'ClamAV is optional – Tuxdex also works without it.',
+    'ClamAV mit aktuellen Signaturen.': 'ClamAV with current signatures.',
+    'ClamAV: Signaturen, Scans, Quarantäne': 'ClamAV: signatures, scans, quarantine',
+    'Commit {} – lade Dateien …': 'Commit {} – loading files …',
+    'CPU = Anteil an der Leistung aller Kerne. Energie wird aus der CPU-Last geschätzt – Linux misst den Verbrauch einzelner Programme nicht direkt. Datenträger = Lesen + Schreiben pro Sekunde (bei Prozessen anderer Benutzer nur mit root sichtbar).': "CPU = share of the power of all cores. Energy is estimated from the CPU load – Linux doesn't measure the consumption of individual programs directly. Disk = read + write per second (for other users' processes only visible with root).",
+    'CPU-Regler': 'CPU governor',
+    'CPUfreq-Regler': 'CPUfreq governor',
+    'CPUfreq-Treiber': 'CPUfreq driver',
+    'Darf deinen GPG-Agenten zum Signieren nutzen.': 'May use your GPG agent for signing.',
+    'Darf deinen SSH-Agenten für Anmeldungen nutzen.': 'May use your SSH agent for logins.',
+    'Darf mit allen Programmen deiner Sitzung sprechen.': 'May talk to all programs in your session.',
+    'Darf mit allen Systemdiensten sprechen.': 'May talk to all system services.',
+    'Darf Verbindungen ins Internet und lokale Netz aufbauen.': 'May connect to the internet and the local network.',
+    'Das Backup ist verschlüsselt. Das Passwort wird nicht gespeichert.': 'The backup is encrypted. The password is not saved.',
+    'das normale Netz': 'the normal network',
+    'Das Passwort muss mindestens 8 Zeichen haben.': 'The password must have at least 8 characters.',
+    'Das PKGBUILD im Repository gehört nicht zu tuxdex': "The PKGBUILD in the repository doesn't belong to tuxdex",
+    'Das System startet im Legacy-BIOS-Modus.': 'The system boots in legacy BIOS mode.',
+    'Das System-Protokoll (systemd-journald) sammelt Meldungen aller Dienste und des Kernels.\n\n„Auf 200 MB kürzen“ führt journalctl --vacuum-size=200M aus: die ältesten Einträge werden gelöscht, bis das Protokoll noch 200 MB belegt. Neue Meldungen werden weiter geschrieben.\n\nDauerhaft begrenzen: Sicherheit → Checkliste → System-Protokoll. Braucht root.': 'The system log (systemd-journald) collects messages from all services and the kernel.\n\n“Shrink to 200 MB” runs journalctl --vacuum-size=200M: the oldest entries are deleted until the log uses 200 MB. New messages keep being written.\n\nLimit permanently: Security → Checklist → System log. Needs root.',
+    'Das System-Protokoll auf 500 MB und einen Monat begrenzen?\n\nWird in {} gespeichert. Ältere Einträge werden gelöscht.': 'Limit the system log to 500 MB and one month?\n\nSaved in {}. Older entries will be deleted.',
+    'Das Ziel darf nicht gleich einer Quelle sein.': 'The target must not be the same as a source.',
+    'Datei konnte nicht ersetzt werden: {}': 'File could not be replaced: {}',
+    'Datei zusätzlich löschen und Eintrag aus /etc/fstab entfernen': 'Also delete the file and remove the entry from /etc/fstab',
+    'Dateien': 'Files',
+    'Dateien in Quarantäne liegen ohne Ausführungsrechte in {}.': 'Files in quarantine are stored without execute permissions in {}.',
+    'Dateien, die du im Dateimanager gelöscht hast, landen zuerst hier (~/.local/share/Trash).\n\n„Leeren“ löscht sie endgültig – sie lassen sich danach nicht mehr wiederherstellen.': "Files you deleted in the file manager end up here first (~/.local/share/Trash).\n\n“Empty” deletes them permanently – they can't be restored afterwards.",
+    'Dateifreigabe (Samba)': 'File sharing (Samba)',
+    'Dateisystem': 'File system',
+    'Datenmenge': 'Data',
+    'Datenordner': 'Data folder',
+    'Datenschutz': 'Privacy',
+    'Datenträger': 'Drives',
+    'Datenträger formatieren': 'Format drive',
+    'Datenträger umbenennen': 'Rename drive',
+    'Datenträger · {}': 'Drive · {}',
+    'davon Programme': 'of which programs',
+    'Deaktivieren': 'Disable',
+    'deaktiviert': 'disabled',
+    'Deine öffentliche IP steht auf keiner bekannten Sperrliste.': "Your public IP isn't on any known blocklist.",
+    'Deine öffentliche IP steht auf Sperrlisten:': 'Your public IP is on blocklists:',
+    'deinen DNS-Server': 'your DNS server',
+    'Deinstallation beendet.': 'Uninstall finished.',
+    'Deinstallieren': 'Uninstall',
+    'Deinstallieren …': 'Uninstall …',
+    'Deinstallieren, Daten behalten': 'Uninstall, keep data',
+    'Den Ordner {} gibt es nicht.': "The folder {} doesn't exist.",
+    'Der Bildschirm sperrt sich bei Inaktivität.': 'The screen locks when idle.',
+    'Der Bildschirm sperrt sich nicht automatisch – in den Systemeinstellungen einschalten.': "The screen doesn't lock automatically – turn it on in the system settings.",
+    'der Dienst lädt sie gerade (beim ersten Mal einige Minuten).</span>': 'the service is loading them right now (a few minutes the first time).</span>',
+    'Der Internetverkehr läuft aber direkt über {} (Split-Tunnel).': 'But internet traffic goes directly via {} (split tunnel).',
+    'Der Internetverkehr läuft darüber.': 'Internet traffic goes through it.',
+    'Der Leak-Test-Dienst war nicht erreichbar.': "The leak test service wasn't reachable.",
+    'Der Start ist noch nicht abgeschlossen.': "Startup hasn't finished yet.",
+    'Der Taktregler der CPU. Details: Taskmanager → Leistung → Prozessor.': "The CPU's frequency governor. Details: Task manager → Performance → Processor.",
+    'Der Vorgang wartet auf deine Antwort': 'The operation is waiting for your answer',
+    'Details ausblenden (oder Kachel erneut anklicken)': 'Hide details (or click the tile again)',
+    'Diagnose': 'Diagnosis',
+    'Die 20 schnellsten aktuellen HTTPS-Server suchen und als /etc/pacman.d/mirrorlist speichern? Die alte Liste bleibt als mirrorlist.bak.': 'Find the 20 fastest up-to-date HTTPS servers and save them as /etc/pacman.d/mirrorlist? The old list is kept as mirrorlist.bak.',
+    'Die aktuelle Vollversion ist {}. Du nutzt noch die Beta {} – wechseln installiert die Vollversion.': "The current full version is {}. You're still using beta {} – switching installs the full version.",
+    'Die App hat noch keinen Datenordner ({}).': 'The app has no data folder yet ({}).',
+    'Die Firewall filtert diese Ports.': 'The firewall filters these ports.',
+    'Die Liste aller selbst installierten Pakete macht eine Neuinstallation leicht. Tuxdex legt sie in ~/.config/tuxdex ab und erneuert sie bei jedem Backup.': 'The list of all explicitly installed packages makes reinstalling easy. Tuxdex stores it in ~/.config/tuxdex and renews it with every backup.',
+    'Die Liste der Download-Server. Ältere Listen führen zu langsamen oder veralteten Servern.': 'The list of download servers. Older lists lead to slow or outdated servers.',
+    'Die Mullvad-Kontonummer hat 16 Ziffern.': 'The Mullvad account number has 16 digits.',
+    'Die neue Datei ist fehlerhaft und wird nicht übernommen: {}': "The new file is faulty and won't be used: {}",
+    'Die neue Version ist installiert. Tuxdex jetzt neu starten?': 'The new version is installed. Restart Tuxdex now?',
+    'Die Passwörter stimmen nicht überein.': "The passwords don't match.",
+    'Die Quarantäne ist leer.': 'The quarantine is empty.',
+    'Die sudo-Regeln sind nur mit Administrator-Rechten lesbar.': 'The sudo rules are only readable with administrator rights.',
+    'Die Systempartition ist unverschlüsselt – bei Diebstahl sind alle Daten lesbar. Nachträglich nur über Neuinstallation/Backup sinnvoll. LUKS-Geräte:': 'The system partition is unencrypted – if stolen, all data is readable. Can only be changed afterwards via reinstall/backup. LUKS devices:',
+    'Die Systempartition liegt auf LUKS. LUKS-Geräte: {}': 'The system partition is on LUKS. LUKS devices: {}',
+    'Die Uhrzeit wird über das Netz abgeglichen.': 'The time is synchronized over the network.',
+    'Die Virensignaturen sind veraltet.': 'The virus signatures are outdated.',
+    'Dienst': 'Service',
+    'Dienst aus': 'Service off',
+    'Dienst deaktivieren': 'Disable service',
+    'Dienst nicht erreichbar': 'Service not reachable',
+    'Dienst stoppen': 'Stop service',
+    'Dienste starten größtenteils parallel – die Zeiten addieren sich nicht. Entscheidend ist vor allem „System (Dienste)“.': "Services mostly start in parallel – the times don't add up. What matters most is “System (services)”.",
+    'Diese Dateien an ihren ursprünglichen Ort zurücklegen?\nNur tun, wenn du sicher bist, dass es ein Fehlalarm ist.': "Put these files back in their original location?\nOnly do this if you're sure it's a false alarm.",
+    'Diese Dateien unwiderruflich löschen?': 'Permanently delete these files?',
+    'Diese Gruppen geben praktisch root-Rechte ohne Passwort – nur behalten, wenn du sie brauchst (gpasswd -d BENUTZER GRUPPE).': 'These groups give practically root rights without a password – only keep them if you need them (gpasswd -d USER GROUP).',
+    'Diese Ordner gehören zu keinem installierten Kernel mehr und werden gelöscht:': 'These folders no longer belong to any installed kernel and will be deleted:',
+    'Diese verwaisten Pakete entfernen?': 'Remove these orphaned packages?',
+    'Diese Ziele haben kein Linux-Dateisystem:': "These targets don't have a Linux file system:",
+    'Dieses Gerät vom Mullvad-Konto abmelden?\nDas VPN wird getrennt.': 'Log this device out of the Mullvad account?\nThe VPN will be disconnected.',
+    'Direkter Bluetooth-Zugriff.': 'Direct Bluetooth access.',
+    'Direkter Zugriff auf die Grafikkarte für 3D und Video.': 'Direct access to the graphics card for 3D and video.',
+    'DNS-Anfragen gehen an {} ({}) über {} – am VPN vorbei. Im VPN-Programm den VPN-DNS erzwingen (Mullvad: Kill-Switch/Lockdown).': 'DNS requests go to {} ({}) via {} – bypassing the VPN. Force the VPN DNS in the VPN program (Mullvad: kill switch/lockdown).',
+    'DNS-Server, die Webseiten sehen': 'DNS servers websites see',
+    'Docker speichert Images, Container und Volumes in /var/lib/docker.\n\nZum Aufräumen im Terminal: docker system prune (entfernt gestoppte Container, ungenutzte Netzwerke und Images ohne Namen; mit -a auch alle unbenutzten Images). Volumes bleiben, außer mit --volumes.': 'Docker stores images, containers and volumes in /var/lib/docker.\n\nTo clean up in the terminal: docker system prune (removes stopped containers, unused networks and untagged images; with -a also all unused images). Volumes are kept unless you add --volumes.',
+    'Dokumente': 'Documents',
+    'Doppelklick zum Öffnen': 'Double-click to open',
+    'Download fehlgeschlagen': 'Download failed',
+    'Downloads  (~/Downloads)': 'Downloads  (~/Downloads)',
+    'Drucken': 'Printing',
+    'Drucken (CUPS)': 'Printing (CUPS)',
+    'Eigene Regel entfernen': 'Remove own rule',
+    'eigener Eintrag': 'own entry',
+    'Eigener Ordner …': 'Custom folder …',
+    'Ein Pfad pro Zeile, z. B. ~/.cache': 'One path per line, e.g. ~/.cache',
+    'Eine 1:1-Kopie, die bei jedem Lauf nur die Änderungen überträgt. Schnell, aber nur ein Stand.': 'A 1:1 copy that only transfers the changes on each run. Fast, but only one state.',
+    'Eine einzige komprimierte Datei pro Backup, optional mit Passwort. Wird einmal gepackt und gleichzeitig auf alle Ziele geschrieben. Passt auf jeden Datenträger (FAT32: 4-GB-Teile).': 'One single compressed file per backup, optionally with a password. Packed once and written to all targets at the same time. Fits on any drive (FAT32: 4 GB parts).',
+    'Eingehängt unter': 'Mounted at',
+    'Eingestellt': 'Set',
+    'Einhängen': 'Mount',
+    'Einige DNS-Server gehören nicht zum Anbieter deiner VPN-Adresse:': "Some DNS servers don't belong to the provider of your VPN address:",
+    'Einige gehören anderen Benutzern – dafür sind root-Rechte nötig.': 'Some belong to other users – that needs root rights.',
+    'Einrichten': 'Set up',
+    'Einschalten': 'Turn on',
+    'Einstellung konnte nicht gespeichert werden: {}': 'Setting could not be saved: {}',
+    'Einstellungen': 'Settings',
+    'Empfangen': 'Received',
+    'Empfohlen setzen': 'Set recommended',
+    'Empfohlene Scheduler setzen (NVMe: none, SSD: mq-deadline, Festplatte: bfq)?\n\nWird als udev-Regel in {} gespeichert.': 'Set recommended schedulers (NVMe: none, SSD: mq-deadline, hard disk: bfq)?\n\nSaved as a udev rule in {}.',
+    'Endgültig löschen': 'Delete permanently',
+    'Energie (gesch.)': 'Energy (est.)',
+    'Energiemodus': 'Energy mode',
+    'Entfernen': 'Remove',
+    'entfernt ungenutzte Laufzeiten': 'removes unused runtimes',
+    'Entpacke Archiv …': 'Extracting archive …',
+    'Entpacke Quellen …': 'Extracting sources …',
+    'Entstanden mit': 'Made with',
+    'Entwickelt von': 'Developed by',
+    'Entwickler-Funktionen': 'Developer features',
+    'Entwicklungsserver': 'Development server',
+    'Erkannt': 'Detected',
+    'Erkennung durch Webseiten': 'Detection by websites',
+    'Erlauben': 'Allow',
+    'erlauben': 'allow',
+    'Erlaubt sind Buchstaben, Ziffern, Leerzeichen und _ . -': 'Allowed are letters, digits, spaces and _ . -',
+    'Ermittle …': 'Measuring …',
+    'Erneut aus': 'Off again',
+    'Erneut testen': 'Test again',
+    'Erreichbar': 'Reachable',
+    'error: Anmeldung fehlgeschlagen – Nummer prüfen oder Gerätelimit (5 Geräte) im Mullvad-Konto erreicht.': 'error: login failed – check the number or the device limit (5 devices) of the Mullvad account has been reached.',
+    'error: Kein Paket gebaut (Exit-Code {}) – Meldungen oben prüfen.': 'error: no package built (exit code {}) – check the messages above.',
+    'error: Laufwerksliste konnte nicht aufgebaut werden: {}': 'error: drive list could not be built: {}',
+    'error: lsblk fehlgeschlagen (Exit {}): {}\nAusgabe: {}': 'error: lsblk failed (exit {}): {}\nOutput: {}',
+    'error: {} konnte nicht verschoben werden: {}': 'error: {} could not be moved: {}',
+    'Ersetzen': 'Replace',
+    'Ersparnis': 'Savings',
+    'Erst aushängen': 'Unmount first',
+    'Erst Signaturen laden – ohne sie kann ClamAV nichts erkennen.': "Load signatures first – without them ClamAV can't detect anything.",
+    'Erstellt': 'Created',
+    'Erzeuge Paketdatei …': 'Creating package file …',
+    'Erzwingen': 'Force',
+    'Es gibt keine verwaisten Pakete.': 'There are no orphaned packages.',
+    'Es ist kein System-Proxy eingestellt.': 'No system proxy is set.',
+    'Es ist kein VPN aktiv.': 'No VPN is active.',
+    'Es läuft noch:': 'Still running:',
+    'Es wird kein Swap genutzt.': 'No swap is used.',
+    'Es wird nur deaktiviert, nichts gelöscht.': 'It will only be disabled, nothing deleted.',
+    'Es wurde kein DNS-Server gefunden.': 'No DNS server was found.',
+    'exFAT (USB-Sticks, alle Systeme)': 'exFAT (USB sticks, all systems)',
+    'Exit-Node': 'Exit node',
+    'ext4 (Linux)': 'ext4 (Linux)',
+    'Fallback-Speicher': 'Fallback memory',
+    'Fallback-Speicher (Swapfile) und Swappiness': 'Fallback memory (swap file) and swappiness',
+    'Falsche Uhrzeit stört Zertifikate, Updates und Logs.': 'A wrong time disturbs certificates, updates and logs.',
+    'Falsches Passwort – noch {} Versuch{}.': 'Wrong password – {} attempt{} left.',
+    'FAT32 (maximal kompatibel)': 'FAT32 (maximum compatibility)',
+    'Fehler': 'Error',
+    'fehler': 'error',
+    'Fehler beim Start: {}': 'Error at startup: {}',
+    'Fehler im System-Protokoll seit dem Start (journalctl -p 3 -b). Viele sind harmlos (z. B. Firmware-Hinweise) – wiederkehrende lohnen einen Blick.': 'Errors in the system log since startup (journalctl -p 3 -b). Many are harmless (e.g. firmware notes) – recurring ones are worth a look.',
+    'Fehler seit dem Start': 'Errors since startup',
+    'Fehler: {}': 'Error: {}',
+    'Fehlerprotokoll': 'Error log',
+    'fehlgeschlagen': 'failed',
+    'Fehlgeschlagen:': 'Failed:',
+    'Fehlgeschlagene Dienste': 'Failed services',
+    'Fehlt': 'Missing',
+    'Fertig': 'Done',
+    'Fertig · {}{}{}': 'Done · {}{}{}',
+    'Fertig – neue Version installiert': 'Done – new version installed',
+    'Festplatte (HDD)': 'Hard disk (HDD)',
+    'Festplatte / Ordner': 'Drive / folder',
+    'Festplatten & Partitionen': 'Hard drives & partitions',
+    'Festplattenverschlüsselung (LUKS)': 'Disk encryption (LUKS)',
+    'Firewall aktivieren': 'Enable firewall',
+    'Firewall aktivieren? Eingehende Verbindungen werden dann blockiert (ausgehende bleiben erlaubt).': 'Enable the firewall? Incoming connections will then be blocked (outgoing stay allowed).',
+    'Firewall wirklich deaktivieren?': 'Really disable the firewall?',
+    'Firmware (fwupd)': 'Firmware (fwupd)',
+    'Firmware (UEFI/BIOS)': 'Firmware (UEFI/BIOS)',
+    'Firmware-Updates verfügbar für:': 'Firmware updates available for:',
+    'Flathub fehlt': 'Flathub missing',
+    'Flathub hinzufügen': 'Add Flathub',
+    'Flatpak (Flathub)': 'Flatpak (Flathub)',
+    'Flatpak (nicht installiert)': 'Flatpak (not installed)',
+    'Flatpak (System + Benutzer)': 'Flatpak (system + user)',
+    'flatpak fehlt': 'flatpak missing',
+    'Flatpak installieren': 'Install Flatpak',
+    'Flatpak ist installiert, aber <b>Flathub</b> (die große App-Quelle) ist noch nicht eingerichtet.': "Flatpak is installed, but <b>Flathub</b> (the big app source) isn't set up yet.",
+    'flatpak ist nicht installiert': 'flatpak is not installed',
+    'flatpak ist nicht installiert – im Tab „Flatpak“ einrichten.': 'flatpak is not installed – set it up in the “Flatpak” tab.',
+    'Flatpak ist nicht installiert. Flatpak-Apps laufen abgeschottet vom System – hier legst du fest, was jede App darf.': 'Flatpak is not installed. Flatpak apps run isolated from the system – here you decide what each app may do.',
+    'Flatpak · {}': 'Flatpak · {}',
+    'Flatpak-Apps brauchen Laufzeiten (z. B. GNOME- oder KDE-Plattform). Nach Updates oder dem Deinstallieren von Apps bleiben alte Versionen liegen.\n\n„Unbenutzte entfernen“ führt flatpak uninstall --unused aus. Apps und ihre Daten bleiben erhalten.': 'Flatpak apps need runtimes (e.g. the GNOME or KDE platform). After updates or uninstalling apps, old versions are left behind.\n\n“Remove unused” runs flatpak uninstall --unused. Apps and their data are kept.',
+    'Flatpak-Apps und ihre Rechte (Dateien, Geräte, Netzwerk …) wie mit Flatseal': 'Flatpak apps and their permissions (files, devices, network …) like Flatseal',
+    'Flatpak: nur für mich installieren (--user, ohne Passwort)': 'Flatpak: install only for me (--user, no password)',
+    'Formatieren': 'Format',
+    'Formatieren nicht möglich': 'Formatting not possible',
+    'Formatieren von {} {}.': 'Formatting {} {}.',
+    'Formatieren …': 'Format …',
+    'Formatiert': 'Formatted',
+    'Formfaktor': 'Form factor',
+    'Fortschritt': 'Progress',
+    'Fortsetzen': 'Resume',
+    'Fragt am.i.mullvad.net nach deiner öffentlichen IP': 'Asks am.i.mullvad.net for your public IP',
+    'Fragt am.i.mullvad.net – zeigt, wie dich Webseiten sehen': 'Asks am.i.mullvad.net – shows how websites see you',
+    'frei': 'free',
+    'Freigaben über Portale': 'Sharing via portals',
+    'Freigeben': 'Allow',
+    'Freigegeben': 'Allowed',
+    'freigegeben': 'allowed',
+    'freshclam läuft bereits (PID': 'freshclam is already running (PID',
+    'fstrim.timer gibt freie Blöcke einmal pro Woche an die SSD zurück.': 'fstrim.timer returns free blocks to the SSD once a week.',
+    'Funde': 'Findings',
+    'Funde automatisch in Quarantäne verschieben': 'Move findings to quarantine automatically',
+    'fwupd hat nicht geantwortet.': "fwupd didn't respond.",
+    'fwupd kennt keine neueren Firmware-Versionen (BIOS, SSD, Dock …).': 'fwupd knows no newer firmware versions (BIOS, SSD, dock …).',
+    'Für diese Desktop-Umgebung kann Tuxdex die Sperre nicht auslesen – bitte in den Systemeinstellungen prüfen.': "Tuxdex can't read the lock setting for this desktop environment – please check in the system settings.",
+    'Für erhöhten Schutzbedarf gibt es linux-hardened (manche Programme laufen damit eingeschränkt).': "If you need extra protection, there is linux-hardened (some programs run with restrictions).",
+    'Für manche Spiele und Kommunikations-Apps nötig.': 'Needed by some games and communication apps.',
+    'Für sie „Archiv“ oder „Spiegel“ verwenden – oder abhaken.': 'Use “Archive” or “Mirror” for them – or uncheck them.',
+    'Für virtuelle Maschinen und Emulatoren.': 'For virtual machines and emulators.',
+    'Ganzes System  (/)': 'Whole system  (/)',
+    'Gateway: {}  ·  DNS: {}': 'Gateway: {}  ·  DNS: {}',
+    'gefunden': 'found',
+    'Gefundene Updates beim Start in einem Fenster anbieten (sonst nur Hinweis unten rechts)': 'Offer found updates in a window at startup (otherwise only a hint at the bottom right)',
+    'Gefundene Updates erscheinen als Zahl am Tab „Updates“ und unten rechts – installiert wird erst, wenn du im Tab „Updates“ auf „Update starten“ klickst.': 'Found updates appear as a number on the “Updates” tab and at the bottom right – nothing is installed until you click “Start update” in the “Updates” tab.',
+    'Gelistet': 'Listed',
+    'gelöscht': 'deleted',
+    'Gelöscht: {}': 'Deleted: {}',
+    'Gemeinsam genutzt': 'Shared',
+    'Gemeinsamer Gerätespeicher (/dev/shm)': 'Shared device memory (/dev/shm)',
+    'Gemeinsamer Speicher (IPC)': 'Shared memory (IPC)',
+    'gerade eben': 'just now',
+    'Gerät': 'Device',
+    'Gerät „{}“': 'device “{}”',
+    'Geräte': 'Devices',
+    'Geräte im lokalen Netz erreichbar (Drucker, NAS …)': 'Devices in the local network reachable (printers, NAS …)',
+    'Geräteerkennung (mDNS)': 'Device discovery (mDNS)',
+    'Gesamt': 'Total',
+    'gesamt': 'total',
+    'gesamt {}': 'total {}',
+    'gesamt ↓ {} ↑ {}': 'total ↓ {} ↑ {}',
+    'Geschwindigkeit': 'Speed',
+    'Geschützt': 'Protected',
+    'Gespeichert': 'Saved',
+    'gespeichert und gilt sofort und nach jedem Neustart.': 'saved and applies immediately and after every restart.',
+    'Gespeichert – gilt ab dem nächsten Start.': 'Saved – applies from the next start.',
+    'Gespeichert – gilt beim nächsten Start von {}.': 'Saved – applies the next time {} starts.',
+    'Gespeicherte Freigaben dieser App vergessen? Sie fragt beim nächsten Mal erneut.': "Forget this app's saved permissions? It will ask again next time.",
+    'Gesperrt': 'Blocked',
+    'gesperrt': 'blocked',
+    'Gestartet am': 'Started on',
+    'gestoppt': 'stopped',
+    'gestoppt/pausiert': 'stopped/paused',
+    'Getrennt': 'Disconnected',
+    'geändert': 'changed',
+    'GitHub nicht erreichbar oder Repository falsch: {}': 'GitHub not reachable or wrong repository: {}',
+    'GitHub-Repository': 'GitHub repository',
+    'Gleiche oder ältere Version': 'Same or older version',
+    'Globale Regeln': 'Global rules',
+    'GPG-Schlüssel': 'GPG keys',
+    'Grafik': 'Graphics',
+    'Grafik · {}': 'Graphics · {}',
+    'Grafikbeschleunigung (GPU)': 'Graphics acceleration (GPU)',
+    'Grafiktreiber': 'Graphics driver',
+    'Grafische Systemverwaltung für Arch Linux – alles in einem Fenster, ohne Terminal. Befehle laufen sichtbar in der Ausgabe, root-Rechte werden nur bei Bedarf und einmal pro Sitzung abgefragt.': 'Graphical system management for Arch Linux – everything in one window, no terminal. Commands run visibly in the output, root rights are only requested when needed and once per session.',
+    'GRÖSSE': 'SIZE',
+    'Größe': 'Size',
+    'Größe (GB)': 'Size (GB)',
+    'Größe berechnen': 'Calculate size',
+    'Größen ermitteln': 'Measure sizes',
+    'gzip – überall lesbar': 'gzip – readable everywhere',
+    'gültig bis {}': 'valid until {}',
+    'Handles = geöffnete Dateien und Verbindungen im ganzen System. Die Last zeigt, wie viele Prozesse im Schnitt auf Rechenzeit warten – mehr als die Zahl der Threads heißt Überlastung.': 'Handles = open files and connections in the whole system. The load shows how many processes are waiting for CPU time on average – more than the number of threads means overload.',
+    'Hardware & System': 'Hardware & system',
+    'Hersteller': 'Manufacturer',
+    'Heute hieße die Sicherung: <b>{}</b><br>Platzhalter: <b>yyyy</b> Jahr · <b>mm</b> Monat · <b>dd</b> Tag · <b>HH</b> Stunde · <b>MM</b> Minute · <b>SS</b> Sekunde – mit beliebigem Text davor oder dahinter, z. B. <b>Laptop_yyyy-mm-dd</b> oder <b>yyyy-mm-dd vor Update</b>. Gibt es den Namen schon, hängt Tuxdex _2, _3 … an.': 'Today the backup would be called: <b>{}</b><br>Placeholders: <b>yyyy</b> year · <b>mm</b> month · <b>dd</b> day · <b>HH</b> hour · <b>MM</b> minute · <b>SS</b> second – with any text before or after, e.g. <b>Laptop_yyyy-mm-dd</b> or <b>yyyy-mm-dd before update</b>. If the name already exists, Tuxdex appends _2, _3 ….',
+    'Hintergrundprozesse': 'Background processes',
+    'Hinweis': 'Notice',
+    'Hinzufügen': 'Add',
+    'hoch': 'high',
+    'Hochrechnung läuft …': 'Estimating …',
+    'Hole neueste Version (git pull) …': 'Fetching latest version (git pull) …',
+    'Home-Ordner': 'Home folder',
+    'Home-Ordner (~)': 'Home folder (~)',
+    'Hängt? {} Min keine Meldung': 'Stuck? No message for {} min',
+    'Höchstens {} (belegt: {}).': 'At most {} (used: {}).',
+    'Ich habe verstanden und nutze Tuxdex auf eigenes Risiko.': 'I understand and use Tuxdex at my own risk.',
+    'Im Archiv ist kein PKGBUILD für tuxdex.': 'The archive contains no PKGBUILD for tuxdex.',
+    'Im Cache': 'Cached',
+    'Im Dateimanager zeigen': 'Show in file manager',
+    'Im Original gelöschte Dateien auch im Spiegel löschen': 'Also delete files in the mirror that were deleted in the original',
+    'Im Paket fehlt tuxdex.py.': 'tuxdex.py is missing from the package.',
+    'Immer höchster Takt – schnell, aber mehr Strom und Wärme.': 'Always highest clock – fast, but more power and heat.',
+    'In /etc/pacman.conf steht SigLevel = Never/TrustAll bei:': 'In /etc/pacman.conf, SigLevel = Never/TrustAll is set for:',
+    'In diesem Ordner liegt kein PKGBUILD für tuxdex.': 'This folder contains no PKGBUILD for tuxdex.',
+    'In Ordner wiederherstellen …': 'Restore to folder …',
+    'In pacman.log steht noch kein vollständiges Update.': "pacman.log doesn't contain a full update yet.",
+    'in Quarantäne': 'in quarantine',
+    'In Quarantäne verschieben': 'Move to quarantine',
+    'In Quarantäne: {}': 'In quarantine: {}',
+    'In Verwendung': 'In use',
+    'In {} legt Tuxdex aus Sicherheitsgründen kein Swapfile an.': "For security reasons Tuxdex doesn't create a swap file in {}.",
+    'In {} „telemetry.telemetryLevel“ auf „off“ setzen?': 'Set “telemetry.telemetryLevel” to “off” in {}?',
+    'Insgesamt empfangen': 'Total received',
+    'Insgesamt gelesen': 'Total read',
+    'Insgesamt geschrieben': 'Total written',
+    'Insgesamt gesendet': 'Total sent',
+    'Installation beendet (Exit {}).': 'Installation finished (exit {}).',
+    'Installation fehlgeschlagen': 'Installation failed',
+    'Installiere fehlende Abhängigkeiten …': 'Installing missing dependencies …',
+    'Installiere mit pacman …': 'Installing with pacman …',
+    'Installiere neue Version …': 'Installing new version …',
+    'Installiere …': 'Installing …',
+    'Installieren': 'Install',
+    'Installiert': 'Installed',
+    'Installiert am': 'Installed on',
+    'Installiert, aus': 'Installed, off',
+    'Installiert: {}  ·  {}': 'Installed: {}  ·  {}',
+    'Installierte Software': 'Installed software',
+    'Interner Fehler – Details in ~/tuxdex_error.log': 'Internal error – details in ~/tuxdex_error.log',
+    'Internet & Netzwerk': 'Internet & network',
+    'Internetanbieter': 'Internet provider',
+    'Internetanbieter oder unbekannter Anbieter': 'Internet provider or unknown provider',
+    'ipapi.is nicht erreichbar (': 'ipapi.is not reachable (',
+    'ipapi.is nicht erreichbar ({}).': 'ipapi.is not reachable ({}).',
+    'Ist der Ordner ein Git-Klon, holt Tuxdex vorher die neueste Version (git pull). Gebaut wird mit makepkg in einem Arbeitsordner, installiert mit pacman – danach startet Tuxdex neu.': 'If the folder is a Git clone, Tuxdex first fetches the latest version (git pull). It is built with makepkg in a work folder and installed with pacman – then Tuxdex restarts.',
+    'Ja': 'Yes',
+    'Ja ({})': 'Yes ({})',
+    'Jedes Backup ist eine eigene Version (Datum/Uhrzeit). Unveränderte Dateien werden nur verlinkt und kosten keinen Platz – wie Time Machine. Braucht ext4, btrfs, xfs …': 'Every backup is its own version (date/time). Unchanged files are only linked and take no space – like Time Machine. Needs ext4, btrfs, xfs …',
+    'jetzt': 'now',
+    'Jetzt aktualisieren': 'Update now',
+    'Jetzt speichern': 'Save now',
+    'Kachel anklicken, um Details zu sehen – z. B. Caches, Takt und Virtualisierung beim Prozessor, Partitionen beim Datenträger, Takt und Leistung bei der Grafik.': 'Click a tile to see details – e.g. caches, clock speed and virtualization for the processor, partitions for drives, clock speed and power for graphics.',
+    'Kann nicht schreiben: {}': "Can't write: {}",
+    'Kapazität': 'Capacity',
+    'Kapazität jetzt': 'Capacity now',
+    'Kapazität neu': 'Capacity when new',
+    'KDE Connect': 'KDE Connect',
+    'Kein Akku gefunden – das Gerät läuft am Netz.': 'No battery found – the device runs on mains power.',
+    'kein Akku – Netzbetrieb': 'no battery – on mains power',
+    'Kein aktiver Swap gefunden.': 'No active swap found.',
+    'Kein Dateisystem – mit „Formatieren“ anlegen.': 'No file system – create one with “Format”.',
+    'Kein Dienst wartet auf Verbindungen von außen.': 'No service is waiting for connections from outside.',
+    'Kein Eintrag': 'No entry',
+    'Kein externes Laufwerk eingehängt – Stick einstecken oder Ordner wählen': 'No external drive mounted – plug in a stick or choose a folder',
+    'Kein Fernzugriff per SSH möglich.': 'No remote access via SSH possible.',
+    'Kein Gerät ausgewählt': 'No device selected',
+    'Kein installiertes Paket hat eine bekannte Lücke.': 'No installed package has a known vulnerability.',
+    'Kein Leck': 'No leak',
+    'Kein Passwort oder Token im Shell-Verlauf gefunden.': 'No password or token found in the shell history.',
+    'Kein Programm wartet auf Verbindungen von außen – nichts zu tun.': 'No program is waiting for connections from outside – nothing to do.',
+    'Kein Prozess ausgewählt': 'No process selected',
+    'Kein Repository eingetragen': 'No repository set',
+    'Kein SSD/NVMe-Laufwerk gefunden.': 'No SSD/NVMe drive found.',
+    'Kein Swap': 'No swap',
+    'Kein Swap aktiv': 'No swap active',
+    'kein Swap aktiv': 'no swap active',
+    'KEIN Treiber': 'NO driver',
+    'Kein UEFI': 'No UEFI',
+    'Kein vollständiges Update im pacman-Log gefunden.': 'No full update found in the pacman log.',
+    'Kein VPN': 'No VPN',
+    'Kein Werkzeug': 'No tool',
+    'Kein Zeitplan aktiv': 'No schedule active',
+    'Kein Ziel': 'No target',
+    'Kein Ziel erreichbar – nichts zu tun.': 'No target reachable – nothing to do.',
+    'Keine': 'None',
+    'keine': 'none',
+    'Keine /etc/pacman.d/mirrorlist gefunden.': 'No /etc/pacman.d/mirrorlist found.',
+    'Keine Admin-Rechte': 'No admin rights',
+    'keine Adresse': 'no address',
+    'Keine aktivierten Benutzerdienste.': 'No enabled user services.',
+    'keine Angabe gefunden': 'no information found',
+    'Keine App ausgewählt': 'No app selected',
+    'Keine Autostart-Programme.': 'No autostart programs.',
+    'Keine Bedrohungen': 'No threats',
+    'Keine bekannt': 'None known',
+    'Keine Dateisysteme gefunden.': 'No file systems found.',
+    'keine Drehzahl gemeldet': 'no speed reported',
+    'Keine Firewall aktiv. Eingehende Verbindungen werden nicht gefiltert.': 'No firewall active. Incoming connections are not filtered.',
+    'Keine gesehen': 'None seen',
+    'Keine gespeicherten Freigaben (Kamera, Standort, Bildschirmaufnahme …).': 'No saved permissions (camera, location, screen recording …).',
+    'Keine gespeicherten Freigaben.': 'No saved permissions.',
+    'keine Grafikkarte erkannt': 'no graphics card detected',
+    'keine Kompression': 'no compression',
+    'keine Laufwerke gefunden': 'no drives found',
+    'Keine Laufwerke gefunden.': 'No drives found.',
+    'keine Netzwerkschnittstelle gefunden': 'no network interface found',
+    'Keine offen': 'None open',
+    'Keine Quellen': 'No sources',
+    'Keine Reste alter Kernel.': 'No leftovers of old kernels.',
+    'Keine Rückmeldung seit über 10 Minuten nach:': 'No response for over 10 minutes after:',
+    'keine Signaturen': 'no signatures',
+    'Keine Signaturen': 'No signatures',
+    'Keine SSD': 'No SSD',
+    'Keine Updates verfügbar – das System ist aktuell.': 'No updates available – the system is up to date.',
+    'Keine Updates verfügbar.': 'No updates available.',
+    'Keine vorhandenen Quellen ausgewählt.': 'No existing sources selected.',
+    'Keine weiteren Ordner freigegeben.': 'No additional folders shared.',
+    'Keiner': 'None',
+    'keiner gefunden': 'none found',
+    'Kerne': 'Cores',
+    'Kernel & Neustart': 'Kernel & restart',
+    'Kernel (Slab)': 'Kernel (slab)',
+    'Kernel wurde aktualisiert – bitte neu starten, damit z. B. USB-Sticks erkannt werden.': 'Kernel was updated – please restart so that e.g. USB sticks are detected.',
+    'Kernel-Austausch im laufenden Betrieb (kexec) und SysRq-Tastenkürzel sind gesperrt, Kernel-Meldungen und -Adressen nur für root lesbar.': 'Replacing the kernel at runtime (kexec) and SysRq shortcuts are blocked, kernel messages and addresses readable only by root.',
+    'Kernel-Austausch im laufenden Betrieb (kexec) und SysRq-Tastenkürzel sperren, Kernel-Meldungen (dmesg) und -Adressen nur für root?\n\nWird in': 'Block replacing the kernel at runtime (kexec) and SysRq shortcuts, kernel messages (dmesg) and addresses only for root?\n\nSaved in',
+    'Kernel-Schutz': 'Kernel protection',
+    'kernel.randomize_va_space sollte 2 sein (Standard). Jemand hat es abgeschaltet.': 'kernel.randomize_va_space should be 2 (default). Someone turned it off.',
+    'KI-gestützt entwickelt (AI made) – in Zusammenarbeit mit Claude von Anthropic': 'AI-assisted development (AI made) – in collaboration with Claude by Anthropic',
+    'Kill-Switch aktiv – ohne VPN kein Internet': 'Kill switch active – no internet without VPN',
+    'Kill-Switch aktivieren': 'Enable kill switch',
+    'Kill-Switch an': 'Kill switch on',
+    'Kill-Switch: Internet nur über VPN (Lockdown-Modus)': 'Kill switch: internet only via VPN (lockdown mode)',
+    'Kompletter Sitzungs-Bus': 'Entire session bus',
+    'Kompletter System-Bus': 'Entire system bus',
+    'Kompression': 'Compression',
+    'Komprimiere Paket …': 'Compressing package …',
+    'Komprimiert (zram)': 'Compressed (zram)',
+    'Konnte nicht speichern: {}': 'Could not save: {}',
+    'Kontakt': 'Contact',
+    'Kontonummer': 'Account number',
+    'Kontonummer anzeigen': 'Show account number',
+    'Kontonummer verbergen': 'Hide account number',
+    'Kästchen anklicken (oder Doppelklick auf die Zeile) wählt aus – kein Strg nötig.': 'Clicking the checkbox (or double-clicking the row) selects – no Ctrl needed.',
+    'Lade Dateien {}/{}: {}': 'Loading files {}/{}: {}',
+    'Lade github.com/{} ({}) …': 'Loading github.com/{} ({}) …',
+    'Lade herunter …': 'Downloading …',
+    'Lade Paket …': 'Loading package …',
+    'Lade Signaturen … {}:{}': 'Loading signatures … {}:{}',
+    'Lade …': 'Loading …',
+    'Ladegrenze': 'Charge limit',
+    'Ladestand': 'Charge',
+    'Ladezyklen': 'Charge cycles',
+    'Land': 'Country',
+    'langsam': 'slow',
+    'Last': 'Load',
+    'Last 1 / 5 / 15 Min': 'Load 1 / 5 / 15 min',
+    'Last {}': 'Load {}',
+    'Laufende Wartung': 'Ongoing maintenance',
+    'Laufendes Backup abbrechen? Unfertige Dateien werden entfernt, vorhandene Backups bleiben erhalten.': 'Cancel the running backup? Unfinished files are removed, existing backups are kept.',
+    'Laufendes Update wirklich abbrechen?\n\nPacman bricht sauber ab, solange noch nichts installiert wird.': 'Really cancel the running update?\n\nPacman stops cleanly as long as nothing is being installed yet.',
+    'Laufwerk': 'Drive',
+    'Laufwerk hinzufügen': 'Add drive',
+    'Laufwerke & Partitionen': 'Drives & partitions',
+    'Laufwerke einhängen, umbenennen, prüfen, formatieren, sicher entfernen': 'Mount, rename, check, format and safely remove drives',
+    'Laufwerke neu einlesen': 'Rescan drives',
+    'Leak-Test & VPN-Erkennung': 'Leak test & VPN detection',
+    'Leck': 'Leak',
+    'leer = Standard, z. B. 2026-09-27_101500': 'empty = default, e.g. 2026-09-27_101500',
+    'leer lassen = Standard': 'leave empty = default',
+    'Leeren': 'Empty',
+    'Leerlauf': 'Idle',
+    'Leistung': 'Performance',
+    'Leistungsaufnahme': 'Power draw',
+    'Lesegeschwindigkeit': 'Read speed',
+    'Lesen & Schreiben': 'Read & write',
+    'Lesen {}/s · Schreiben {}/s': 'Read {}/s · write {}/s',
+    'Lesen, Schreiben & Anlegen': 'Read, write & create',
+    'Lesezugriff auf Programme und Bibliotheken des Systems.': "Read access to the system's programs and libraries.",
+    'Letzte Änderung Flatpak (Näherung)': 'Last Flatpak change (approximate)',
+    'Letzter Login': 'Last login',
+    'Letzter Scan: {} · {} · {} Dateien · {} Funde · Dauer {}:{}': 'Last scan: {} · {} · {} files · {} findings · duration {}:{}',
+    'Letzter Start: {} ({})': 'Last boot: {} ({})',
+    'Letztes Backup': 'Last backup',
+    'Letztes Backup {}': 'Last backup {}',
+    'Letztes Update (pacman.log)': 'Last update (pacman.log)',
+    'Letztes Update am {} ohne Fehler.': 'Last update on {} without errors.',
+    'Letztes vollständiges Update': 'Last full update',
+    'Letztes vollständiges Update vor {} Tag{}': 'Last full update {} day{} ago',
+    'Lies vorher die Arch-News (archlinux.org/news).': 'Read the Arch news first (archlinux.org/news).',
+    'Liste neu laden': 'Reload list',
+    'Live · alle 2 s': 'Live · every 2 s',
+    'Lizenz': 'License',
+    'Login-Zeiten benötigen root-Rechte – Klick auf „Aktualisieren“ fragt bei Bedarf einmal nach dem Passwort.': 'Login times need root rights – clicking “Refresh” asks for the password once if needed.',
+    'Lokale Adressen': 'Local addresses',
+    'Lokaler DNS-Dienst': 'Local DNS service',
+    'lsblk konnte nicht gelesen werden.': 'lsblk could not be read.',
+    'LVM-Volume': 'LVM volume',
+    'lädt': 'charging',
+    'lädt nicht': 'not charging',
+    'Läuft': 'Running',
+    'läuft': 'running',
+    'Läuft im Hintergrund mit den Einstellungen oben – auch wenn Tuxdex geschlossen ist. Nicht angeschlossene Ziele werden übersprungen, verpasste Termine nachgeholt. Ohne root-Rechte und ohne Passwort-Verschlüsselung.': "Runs in the background with the settings above – even when Tuxdex is closed. Targets that aren't connected are skipped, missed runs are caught up. Without root rights and without password encryption.",
+    'läuft seit {} Std {} Min': 'running for {} h {} min',
+    'läuft seit {} T {} Std {} Min': 'running for {} d {} h {} min',
+    'Läuft …': 'Running …',
+    'Läuft: {} · installiert: {} – nach einem Neustart aktiv.': 'Running: {} · installed: {} – active after a restart.',
+    'Läuft: {}.': 'Running: {}.',
+    'Läuft: {}. Der Kernel wurde aktualisiert – bis zum Neustart fehlen Module (z. B. für USB-Sticks) und der neue Kernel ist nicht aktiv.': "Running: {}. The kernel was updated – until a restart, modules are missing (e.g. for USB sticks) and the new kernel isn't active.",
+    'Löschen': 'Delete',
+    'Lüfter': 'Fans',
+    'Lüfter {}': 'Fan {}',
+    'Lüfter · {}': 'Fan · {}',
+    'Lüfterdrehzahlen erscheinen, wenn der Treiber sie meldet (bei vielen Laptops nur mit passendem Modul, z. B. thinkpad_acpi, dell-smm-hwmon, asus-wmi oder nct6775).': 'Fan speeds appear when the driver reports them (on many laptops only with a suitable module, e.g. thinkpad_acpi, dell-smm-hwmon, asus-wmi or nct6775).',
+    'MAC-Adresse': 'MAC address',
+    'machen ein Zurück in Sekunden möglich – z. B. mit snapper + snap-pac oder timeshift.': 'make going back possible in seconds – e.g. with snapper + snap-pac or timeshift.',
+    'Mainboard & BIOS': 'Mainboard & BIOS',
+    'Mainboard unbekannt': 'Mainboard unknown',
+    'makepkg (Paket pacman, Gruppe base-devel) wird benötigt.': 'makepkg (package pacman, group base-devel) is required.',
+    'makepkg fehlt': 'makepkg missing',
+    'manuell': 'manual',
+    'Max. Geschwindigkeit': 'Max. speed',
+    'Max. PCI-Express-Geschwindigkeit': 'Max. PCI Express speed',
+    'Maximal (langsam)': 'Maximum (slow)',
+    'Meldungen beim letzten Update': 'Messages from the last update',
+    'Mesa fehlt': 'Mesa missing',
+    'Misst gerade:': 'Currently measuring:',
+    'Mit Daten löschen': 'Delete with data',
+    'Mit dem Kill-Switch gibt es nur noch Internet, solange das VPN verbunden ist – auch wenn die App geschlossen ist.\n\nAktivieren?': "With the kill switch there's only internet while the VPN is connected – even when the app is closed.\n\nEnable?",
+    'Mit Passwort verschlüsseln (AES-256, gpg)': 'Encrypt with password (AES-256, gpg)',
+    'Mit root-Rechten (genauer)': 'With root rights (more accurate)',
+    'Mit root-Rechten (nötig für Systemordner wie /etc)': 'With root rights (needed for system folders like /etc)',
+    'Mit root-Rechten (nötig für Systemordner)': 'With root rights (needed for system folders)',
+    'MIT – frei nutzbar, veränderbar und weitergebbar': 'MIT – free to use, modify and share',
+    'Mitglied in:': 'Member of:',
+    'Mitglied in: {}.': 'Member of: {}.',
+    'mittel': 'medium',
+    'Modell': 'Model',
+    'Moderne, abgeschottete Fensterdarstellung.': 'Modern, isolated window display.',
+    'Module für laufenden Kernel vorhanden: {}': 'Modules for the running kernel present: {}',
+    'morgen': 'tomorrow',
+    'Mullvad abmelden': 'Log out of Mullvad',
+    'Mullvad ist installiert, aber der Hintergrunddienst <b>mullvad-daemon</b> läuft nicht.': "Mullvad is installed, but the background service <b>mullvad-daemon</b> isn't running.",
+    'Mullvad ist nicht verbunden – Anbieter und Webseiten sehen deine echte IP.': 'Mullvad is not connected – providers and websites see your real IP.',
+    'Mullvad ist verbunden, Kill-Switch an.': 'Mullvad is connected, kill switch on.',
+    'Mullvad ist verbunden.': 'Mullvad is connected.',
+    'Mullvad VPN': 'Mullvad VPN',
+    'Mullvad VPN ist nicht installiert. Tuxdex funktioniert auch ohne. Sobald Mullvad auf dem System vorhanden ist, lässt es sich hier bedienen.': 'Mullvad VPN is not installed. Tuxdex also works without it. As soon as Mullvad is on the system, it can be used here.',
+    'Mullvad-Befehle brauchen kein Passwort – der Mullvad-Dienst erledigt das. Mit Kill-Switch gibt es ohne VPN-Verbindung kein Internet.': "Mullvad commands don't need a password – the Mullvad service takes care of that. With the kill switch there is no internet without a VPN connection.",
+    'Mullvad-Dienst starten': 'Start Mullvad service',
+    'Musik': 'Music',
+    'Möglich': 'Possible',
+    'Nach dem Schreiben prüfen (liest das Archiv zurück und vergleicht die Prüfsumme)': 'Verify after writing (reads the archive back and compares the checksum)',
+    'Nach Programm gruppieren': 'Group by program',
+    'Nach Updates suchen': 'Check for updates',
+    'Name der Sicherung': 'Backup name',
+    'Name nur aus Buchstaben, Ziffern und _ (z. B. GDK_SCALE).': 'Name only from letters, digits and _ (e.g. GDK_SCALE).',
+    'Name oder Beschreibung …': 'Name or description …',
+    'Name, PID, Benutzer oder Befehl …': 'Name, PID, user or command …',
+    'Namensauflösung (LLMNR)': 'Name resolution (LLMNR)',
+    'Nein': 'No',
+    'nein': 'no',
+    'nein – Neustart nötig!': 'no – restart needed!',
+    'Netz': 'Mains',
+    'Netzteil': 'Power adapter',
+    'Netzwerk': 'Network',
+    'Netzwerk & IP': 'Network & IP',
+    'Netzwerk & IP-Adressen': 'Network & IP addresses',
+    'Netzwerk · {}': 'Network · {}',
+    'Neu': 'New',
+    'Neu einlesen': 'Rescan',
+    'Neu laden': 'Reload',
+    'Neu messen': 'Measure again',
+    'Neu prüfen': 'Check again',
+    'Neu starten': 'Restart',
+    'Neue Bezeichnung': 'New label',
+    'Neue Version {}.': 'New version {}.',
+    'Neuer Server': 'New server',
+    'Neues Laufwerk erkannt:': 'New drive detected:',
+    'Neustart nötig': 'Restart needed',
+    'nice +5 – Prozess bekommt weniger CPU-Zeit': 'nice +5 – process gets less CPU time',
+    'nice −5 – braucht root-Rechte': 'nice −5 – needs root rights',
+    'Nicht aktiv': 'Not active',
+    'nicht aktiv': 'not active',
+    'nicht angemeldet': 'not logged in',
+    'Nicht angemeldet': 'Not logged in',
+    'nicht angeschlossen': 'not connected',
+    'nicht angeschlossen – wird übersprungen': 'not connected – will be skipped',
+    'nicht eingehängt': 'not mounted',
+    'Nicht erkannt': 'Not detected',
+    'nicht ermittelbar': 'not determinable',
+    'Nicht geprüft': 'Not checked',
+    'Nicht gesetzt:': 'Not set:',
+    'Nicht gesichert: {}.': 'Not backed up: {}.',
+    'Nicht installiert': 'Not installed',
+    'nicht installiert': 'not installed',
+    'nicht mehr': 'no longer',
+    'Nicht möglich': 'Not possible',
+    'Nicht nötig': 'Not needed',
+    'Nicht prüfbar': 'Not checkable',
+    'Nicht sichern (ein Pfad pro Zeile)': "Don't back up (one path per line)",
+    'Nicht synchron': 'Not in sync',
+    'nicht unterstützt': 'not supported',
+    'Nicht verschlüsselt': 'Not encrypted',
+    'nicht vorhanden': 'not present',
+    'Nichts ausgewählt': 'Nothing selected',
+    'Nichts zu tun': 'Nothing to do',
+    'niedrig': 'low',
+    'Niedrig = RAM bevorzugen, hoch = früher auslagern.': 'Low = prefer RAM, high = swap out earlier.',
+    'Noch': 'Left',
+    'Noch kein Backup': 'No backup yet',
+    'Noch kein Backup-Ziel festgelegt.': 'No backup target set yet.',
+    'Noch kein Scan durchgeführt.': 'No scan performed yet.',
+    'Noch kein Ziel – unten ein Laufwerk oder einen Ordner hinzufügen.': 'No target yet – add a drive or folder below.',
+    'Noch keine Analyse – Ordner wählen und „Analysieren“ klicken.': 'No analysis yet – choose a folder and click “Analyze”.',
+    'Noch keine Funde.': 'No findings yet.',
+    'Noch nicht geprüft': 'Not checked yet',
+    'Noch nicht geprüft – „Auf Updates prüfen“ klicken.': 'Not checked yet – click “Check for updates”.',
+    'noch nie': 'never',
+    'Noch nie': 'Never',
+    'Noch ohne Fix: {}.': 'No fix yet: {}.',
+    'Noch zu schreiben': 'Waiting to be written',
+    'noch {}:{} h': '{}:{} h left',
+    'Notfall-Treiber': 'Fallback driver',
+    'NTFS (Windows)': 'NTFS (Windows)',
+    'NTP einschalten': 'Turn on NTP',
+    'NTP ist aus.': 'NTP is off.',
+    'nur Anzeige': 'display only',
+    'nur Anzeige – Programme legen hier Zwischendaten ab': 'display only – programs store temporary data here',
+    'nur für dich': 'only for you',
+    'nur ich': 'only me',
+    'Nur lesen': 'Read only',
+    'Nur meine': 'Only mine',
+    'Nur signierte Bootloader/Kernel werden gestartet.': 'Only signed bootloaders/kernels are started.',
+    'Nötig für manche Spiele (Steam, Wine).': 'Needed by some games (Steam, Wine).',
+    'Nötig für viele X11-Programme; teilt Speicher mit dem System.': 'Needed by many X11 programs; shares memory with the system.',
+    'Oben rechts <b>anmelden</b>, um zu sehen, welche Ports die Firewall durchlässt – dann kannst du sie per Knopf sperren oder freigeben.': '<b>Log in</b> at the top right to see which ports the firewall lets through – then you can block or allow them with a button.',
+    'Offen': 'Open',
+    'offen': 'open',
+    'Offene Netzwerk-Ports': 'Open network ports',
+    'Offene Ports': 'Open ports',
+    'Offizielle Paketquellen (pacman)': 'Official repositories (pacman)',
+    'ohne Adresse': 'without address',
+    'Ohne Firewall sind sie im Netz erreichbar.': 'Without a firewall they are reachable from the network.',
+    'Ohne Passwort erlaubt:': 'Allowed without password:',
+    'Ohne Swap/zram beendet Linux bei vollem Speicher Programme.': 'Without swap/zram, Linux kills programs when memory is full.',
+    'Ohne TRIM werden SSDs mit der Zeit langsamer.': 'Without TRIM, SSDs get slower over time.',
+    'Ohne VPN gibt es kein Leck im eigentlichen Sinn: DNS geht an {}': "Without a VPN there's no leak as such: DNS goes to {}",
+    'OpenGL- und Vulkan-Version zeigt Tuxdex, wenn mesa-utils (glxinfo) bzw. vulkan-tools installiert sind.': 'Tuxdex shows the OpenGL and Vulkan version when mesa-utils (glxinfo) or vulkan-tools are installed.',
+    'OpenGL-Version': 'OpenGL version',
+    'Optional – Tuxdex funktioniert auch ohne VPN.': 'Optional – Tuxdex also works without a VPN.',
+    'optional, z. B. USB-Stick': 'optional, e.g. USB stick',
+    'Optional: arch-audit gleicht die installierten Pakete mit der Arch-Sicherheitsdatenbank ab (security.archlinux.org).': 'Optional: arch-audit compares the installed packages with the Arch security database (security.archlinux.org).',
+    'Optional: Mit fwupd lassen sich BIOS-, SSD- und Geräte-Firmware prüfen und aktualisieren (Paket fwupd).': 'Optional: with fwupd, BIOS, SSD and device firmware can be checked and updated (package fwupd).',
+    'Optional: mit sbctl eigene Schlüssel einrichten (schützt vor manipulierten Bootloadern).': 'Optional: set up your own keys with sbctl (protects against manipulated bootloaders).',
+    'Ordner': 'Folder',
+    'Ordner auswählen': 'Choose folder',
+    'Ordner freigeben': 'Share folder',
+    'Ordner hinzufügen …': 'Add folder …',
+    'Ordner kann nicht angelegt werden: {}': "Folder can't be created: {}",
+    'Ordner mit PKGBUILD, z. B. dein geklonter Git-Ordner': 'Folder with PKGBUILD, e.g. your cloned Git folder',
+    'Ordner mit Tuxdex (PKGBUILD) wählen': 'Choose folder with Tuxdex (PKGBUILD)',
+    'Ordner sichern': 'Back up folder',
+    'Ordner wählen …': 'Choose folder …',
+    'Ordner zum Scannen wählen': 'Choose folder to scan',
+    'Ordner öffnen': 'Open folder',
+    'Ort: <code>{}</code> · Quelle: {}': 'Location: <code>{}</code> · source: {}',
+    'Packen fehlgeschlagen (tar {}, Packer {}) – Details in der Ausgabe.': 'Packing failed (tar {}, packer {}) – details in the output.',
+    'Packt …': 'Packing …',
+    'pacman hebt jede heruntergeladene Paketversion in /var/cache/pacman/pkg auf – über Monate werden das schnell mehrere GB.\n\n„Alte Versionen löschen“ führt paccache -rk2 aus: je Paket bleiben die 2 neuesten Versionen liegen (für ein Zurückstufen, falls ein Update Probleme macht). Zusätzlich entfernt paccache -ruk0 alle Dateien von Paketen, die gar nicht mehr installiert sind. Ohne paccache (Paket pacman-contrib) nutzt Tuxdex pacman -Sc: dann bleibt nur die installierte Version im Cache.\n\nBraucht root. Installierte Programme bleiben unberührt.': 'pacman keeps every downloaded package version in /var/cache/pacman/pkg – over months that quickly adds up to several GB.\n\n“Delete old versions” runs paccache -rk2: the 2 newest versions of each package are kept (for downgrading if an update causes problems). In addition, paccache -ruk0 removes all files of packages that are no longer installed. Without paccache (package pacman-contrib), Tuxdex uses pacman -Sc: then only the installed version stays in the cache.\n\nNeeds root. Installed programs are not touched.',
+    'pacman prüft die Signatur jedes Pakets.': 'pacman checks the signature of every package.',
+    'Pacman-Paketcache': 'Pacman package cache',
+    'Paket': 'Package',
+    'Paket gebaut': 'Package built',
+    'Paket-Cache: {}.': 'Package cache: {}.',
+    'Paket-Installation': 'Package installation',
+    'Pakete & Updates': 'Packages & updates',
+    'Pakete mit Icons, Größe, Version und Datum – per Kästchen auswählen und entfernen': 'Packages with icons, size, version and date – select with checkboxes and remove',
+    'Pakete, die einmal als Abhängigkeit eines anderen Programms installiert wurden, das es nicht mehr gibt (pacman -Qdtq).\n\n„Entfernen“ zeigt vorher die Liste und löscht sie dann mit pacman -Rns – samt ihrer eigenen, ebenfalls unnötigen Abhängigkeiten und Konfigurationsdateien.\n\nSelbst installierte Programme sind nie dabei. Braucht root.': 'Packages that were once installed as a dependency of another program that no longer exists (pacman -Qdtq).\n\n“Remove” shows the list first and then deletes them with pacman -Rns – including their own, also unneeded dependencies and configuration files.\n\nExplicitly installed programs are never included. Needs root.',
+    'Paketliste': 'Package list',
+    'Paketliste gespeichert: {}': 'Package list saved: {}',
+    'Paketliste konnte nicht gespeichert werden.': 'The package list could not be saved.',
+    'Paketname(n)': 'Package name(s)',
+    'Paketsignaturen': 'Package signatures',
+    'Papierkorb': 'Trash',
+    'Papierkorb endgültig leeren?': 'Permanently empty the trash?',
+    'Papierkorb leeren': 'Empty trash',
+    'Partitionen (eingehängt)': 'Partitions (mounted)',
+    'paru baut AUR-Pakete in ~/.cache/paru/clone und hebt Quellcode und fertige Pakete auf.\n\nZum Aufräumen im Terminal: paru -Sc (fragt nach, was gelöscht wird).': 'paru builds AUR packages in ~/.cache/paru/clone and keeps source code and built packages.\n\nTo clean up in the terminal: paru -Sc (asks what to delete).',
+    'paru fehlt': 'paru missing',
+    'paru ist nicht installiert.': 'paru is not installed.',
+    'Passend': 'Suitable',
+    'Passt den Takt der Last an – guter Standard.': 'Adjusts the clock to the load – a good default.',
+    'Passwort': 'Password',
+    'Passwort angefragt': 'Password requested',
+    'Passwort des Archivs': 'Archive password',
+    'Passwort falsch oder Authentifizierung fehlgeschlagen.': 'Wrong password or authentication failed.',
+    'Passwort wiederholen': 'Repeat password',
+    'Pausieren': 'Pause',
+    'Pausiert': 'Paused',
+    'PCI-Busadresse': 'PCI bus address',
+    'PCI-Express-Geschwindigkeit': 'PCI Express speed',
+    'Persönliche Daten der App (~/.var/app) können mit gelöscht werden.': "The app's personal data (~/.var/app) can be deleted as well.",
+    'Persönlicher Ordner': 'Home folder',
+    'Persönlicher Ordner  (~)': 'Home folder  (~)',
+    'Petrol = Ordner (Doppelklick öffnet ihn), grau = einzelne Dateien. Die größten 25 Einträge werden gezeigt.': 'Teal = folders (double-click opens), grey = single files. The largest 25 entries are shown.',
+    'Pfad': 'Path',
+    'PKGBUILD ohne pkgver gefunden': 'PKGBUILD without pkgver found',
+    'Platte': 'Disk',
+    'Port freigeben': 'Allow port',
+    'Port {}/{} ({})': 'Port {}/{} ({})',
+    'Portal-Freigaben': 'Portal permissions',
+    'Priorität erhöhen': 'Raise priority',
+    'Priorität senken': 'Lower priority',
+    'Priorität von {} geändert.': 'Priority of {} changed.',
+    'Programm auswählen …': 'Choose program …',
+    'Programmdatei': 'Program file',
+    'Programme': 'Programs',
+    'Programme (selbst installiert)': 'Programs (explicitly installed)',
+    'Programme, die nach der Anmeldung automatisch starten. Ausschalten ist jederzeit umkehrbar – für System-Einträge legt Tuxdex nur eine eigene Einstellung in ~/.config/autostart an.': 'Programs that start automatically after login. Turning them off can always be undone – for system entries Tuxdex only creates its own setting in ~/.config/autostart.',
+    'Projektseite': 'Project page',
+    'Protokoll': 'Protocol',
+    'Prozess beenden': 'End process',
+    'Prozess erzwingen': 'Force process',
+    'Prozesse': 'Processes',
+    'Prozesse ({} von Programmen)': 'Processes ({} from programs)',
+    'Prozesse ({} von Programmen) · läuft seit': 'Processes ({} from programs) · running for',
+    'Prozesse, Leistung, Hardware- und Netzwerkinfos': 'Processes, performance, hardware and network info',
+    'Prozessor': 'Processor',
+    'Prozessor · {}': 'Processor · {}',
+    'Prüfe Abhängigkeiten …': 'Checking dependencies …',
+    'Prüfe auf Updates…': 'Checking for updates…',
+    'Prüfe Dateikonflikte …': 'Checking file conflicts …',
+    'Prüfe geschriebene Daten …': 'Verifying written data …',
+    'Prüfe Paket …': 'Checking package …',
+    'Prüfe Prüfsummen …': 'Checking checksums …',
+    'Prüfe …': 'Checking …',
+    'Prüfen': 'Check',
+    'Prüfen (nur lesen)': 'Check (read only)',
+    'Prüfen fehlgeschlagen': 'Check failed',
+    'Prüfsumme stimmt nicht – Datenträger defekt?': "Checksum doesn't match – drive defective?",
+    'Prüft, welche DNS-Server deine Anfragen wirklich beantworten (DNS-Leak) und ob Webseiten deine Verbindung als VPN, Proxy, Tor oder Rechenzentrum erkennen. Fragt bash.ws, ipapi.is und am.i.mullvad.net.': 'Checks which DNS servers really answer your requests (DNS leak) and whether websites detect your connection as VPN, proxy, Tor or data center. Queries bash.ws, ipapi.is and am.i.mullvad.net.',
+    "PySide6 konnte nicht geladen werden. Vermutlich fehlt das Paket 'pyside6'.\n\nInstallieren mit: sudo pacman -S pyside6\n\nFehlermeldung: {}": "PySide6 could not be loaded. The package 'pyside6' is probably missing.\n\nInstall with: sudo pacman -S pyside6\n\nError message: {}",
+    'Qt / PySide6': 'Qt / PySide6',
+    'Quarantäne': 'Quarantine',
+    'Quelle': 'Source',
+    'Quelle · Ort': 'Source · location',
+    'Quellen': 'Sources',
+    'Quellen vorbereiten …': 'Preparing sources …',
+    'Quellen: {}\nAusnahmen: {}': 'Sources: {}\nExclusions: {}',
+    'Rechnername': 'Hostname',
+    'Rechte zurücksetzen': 'Reset permissions',
+    'Rechte ändern gilt für dich (Benutzer-Einstellung, kein Passwort nötig) und wirkt beim <b>nächsten Start</b> der App.': 'Changing permissions applies to you (user setting, no password needed) and takes effect the <b>next time</b> the app starts.',
+    'reflector installieren': 'Install reflector',
+    'reflector sucht die schnellsten aktuellen.': 'reflector finds the fastest current ones.',
+    'reflector.timer hält die Liste aktuell.': 'reflector.timer keeps the list up to date.',
+    'Regel': 'Rule',
+    'Regel hinzufügen': 'Add rule',
+    'Regel löschen': 'Delete rule',
+    'Regel(n) {} löschen?': 'Delete rule(s) {}?',
+    'Regeln anzeigen': 'Show rules',
+    'Regeln, die für alle Flatpak-Apps gelten': 'Rules that apply to all Flatpak apps',
+    'Registrierte Benutzer': 'Registered users',
+    'Remotedesktop': 'Remote desktop',
+    'renice fehlgeschlagen: {}': 'renice failed: {}',
+    'Restzeit ca. {}': 'About {} left',
+    'Restzeit ca. {} · fertig ca. {}{} Uhr · gesamt ca. {}': 'About {} left · done around {}{} · total about {}',
+    'Restzeit mind. {} (Dateien werden noch gezählt)': 'At least {} left (files are still being counted)',
+    'Revision {}.': 'Revision {}.',
+    'riskant': 'risky',
+    'Riskante Berechtigung': 'Risky permission',
+    'Rohdaten von lsblk und USB in die Ausgabe schreiben': 'Write raw data from lsblk and USB to the output',
+    'Router im lokalen Netz': 'Router in the local network',
+    'rsync-Fehler (Code {}) – Details in der Ausgabe.': 'rsync error (code {}) – details in the output.',
+    'Räume auf …': 'Cleaning up …',
+    'Rückfrage': 'Question',
+    'Sauber': 'Clean',
+    'Scan abbrechen': 'Cancel scan',
+    'Scan abgebrochen': 'Scan cancelled',
+    'Scan läuft': 'Scan running',
+    'Scan mit Fehlern beendet – Details in der Ausgabe.': 'Scan finished with errors – details in the output.',
+    'Scan nach {} abgebrochen – {} Dateien geprüft.': 'Scan cancelled after {} – {} files checked.',
+    'Scan starten': 'Start scan',
+    'Scan-Dienst (clamd)': 'Scan service (clamd)',
+    'Scan-Fehler': 'Scan errors',
+    'Schadsoftware-Seiten blockieren (DNS)': 'Block malware sites (DNS)',
+    'Schließen': 'Close',
+    'schläft': 'sleeping',
+    'Schnell': 'Fast',
+    'schnell': 'fast',
+    'Schreibfehler: {}': 'Write error: {}',
+    'Schreibgeschwindigkeit': 'Write speed',
+    'Schreibtisch': 'Desktop',
+    'Schriften': 'Fonts',
+    'Schutz-Status': 'Protection status',
+    'Secure Boot': 'Secure Boot',
+    'sehr hoch': 'very high',
+    'sehr niedrig': 'very low',
+    'Seit dem Start keine Fehler im System-Protokoll.': 'No errors in the system log since startup.',
+    'Senden': 'Send',
+    'Seriennummer': 'Serial number',
+    'Server {}': 'Server {}',
+    'Setzen': 'Set',
+    'Shell-Verlauf': 'Shell history',
+    'Sicher entfernen': 'Safely remove',
+    'Sicherheit': 'Security',
+    'Sicherheits-Check, offene Ports, Mullvad VPN, Firewall': 'Security check, open ports, Mullvad VPN, firewall',
+    'Sie belegen Speicher und Rechenzeit. Jetzt beenden?': 'They use memory and CPU time. End them now?',
+    'Signal an {} gesendet': 'Signal sent to {}',
+    'Signaturen': 'Signatures',
+    'Signaturen aktualisieren': 'Update signatures',
+    'Signaturen aktuell': 'Signatures up to date',
+    'Signaturen {} Tage alt': 'Signatures {} days old',
+    'sind eingerichtet.': 'are set up.',
+    'Skript auf Version {} ersetzen?\n\n{}\n(Die alte Datei bleibt als .bak erhalten.)': 'Replace the script with version {}?\n\n{}\n(The old file is kept as .bak.)',
+    'Skript auf {} aktualisiert (Sicherung: {}.bak)': 'Script updated to {} (backup: {}.bak)',
+    'Snapshots brauchen ein Linux-Dateisystem (ist: {}). Für dieses Ziel „Archiv“ nutzen.': 'Snapshots need a Linux file system (is: {}). Use “Archive” for this target.',
+    'Snapshots nicht möglich': 'Snapshots not possible',
+    'Snapshots, Spiegel und komprimierte Archive – auf mehrere Ziele gleichzeitig': 'Snapshots, mirrors and compressed archives – to several targets at once',
+    'sofort stoppen': 'stop immediately',
+    'Sonstige (meist verlötet)': 'Other (usually soldered)',
+    'Spannung': 'Voltage',
+    'Speicher': 'Storage',
+    'Speicherabbilder (Core Dumps)': 'Memory dumps (core dumps)',
+    'Speicherabbilder abschalten': 'Disable memory dumps',
+    'Speicheradressen werden zufällig vergeben – erschwert Angriffe.': 'Memory addresses are randomized – makes attacks harder.',
+    'Speicherbelegung': 'Storage usage',
+    'Speichern': 'Save',
+    'Speichertakt': 'Memory clock',
+    'Speicherverbrauch': 'Memory usage',
+    'Sperren': 'Block',
+    'sperren': 'block',
+    'Sperrlisten': 'Blocklists',
+    'Spiegel': 'Mirror',
+    'Spiegelserver': 'Mirrors',
+    'Spiegelserver (Mirrors)': 'Mirrors',
+    'Sprache · Language': 'Language',
+    'Später': 'Later',
+    'SSH stoppen': 'Stop SSH',
+    'SSH-Schlüssel': 'SSH keys',
+    'SSH-Server': 'SSH server',
+    'SSH-Server aktiv': 'SSH server active',
+    'SSH-Server stoppen und nicht mehr automatisch starten?\nLaufende Fernverbindungen werden getrennt.': 'Stop the SSH server and no longer start it automatically?\nRunning remote connections will be disconnected.',
+    'Stadt': 'City',
+    'Standard übernehmen': 'Use default',
+    'Standard-Gateway: {}   ·   DNS-Server: {}': 'Default gateway: {}   ·   DNS servers: {}',
+    'Standort übernehmen': 'Apply location',
+    'stark': 'strong',
+    'Start fehlgeschlagen: {}': 'Start failed: {}',
+    'Starten': 'Start',
+    'startet': 'starting',
+    'Startet …': 'Starting …',
+    'Startet … Signaturen werden geladen': 'Starting … loading signatures',
+    'Status aktualisieren': 'Refresh status',
+    'Status neu prüfen': 'Check status again',
+    'Steckplätze verwendet': 'Slots used',
+    'Stelle Paketinhalt zusammen …': 'Assembling package contents …',
+    'Stoppen': 'Stop',
+    'Stromsparend – bei amd-pstate/intel_pstate trotzdem voll schnell, der Energiemodus entscheidet.': 'Power saving – with amd-pstate/intel_pstate still full speed, the energy mode decides.',
+    'Stromversorgung': 'Power supply',
+    'Stärke': 'Level',
+    'Suche': 'Search',
+    'Suche neuesten Stand …': 'Looking for the latest version …',
+    'sudo fragt immer nach dem Passwort.': 'sudo always asks for the password.',
+    'sudo ohne Passwort (NOPASSWD)': 'sudo without password (NOPASSWD)',
+    'sudo-Passwort eingeben': 'Enter sudo password',
+    'Sudo-Sitzung beendet.': 'Sudo session ended.',
+    'Summen seit dem Systemstart.': 'Totals since system start.',
+    'Swap & Swappiness': 'Swap & swappiness',
+    'Swap deaktivieren': 'Disable swap',
+    'Swap liegt verschlüsselt oder im RAM (zram):': 'Swap is encrypted or in RAM (zram):',
+    'Swap {} deaktivieren?': 'Disable swap {}?',
+    'Swap-Verschlüsselung': 'Swap encryption',
+    'Swapfile anlegen / ersetzen': 'Create / replace swap file',
+    'Swapfile {} mit {} GB anlegen bzw. ersetzen und in /etc/fstab eintragen?': 'Create or replace swap file {} with {} GB and add it to /etc/fstab?',
+    'Swappiness (0–200): je höher, desto früher lagert Linux ungenutzten Speicher aus.': 'Swappiness (0–200): the higher, the earlier Linux swaps out unused memory.',
+    'Swappiness setzen (dauerhaft)': 'Set swappiness (permanently)',
+    'Swappiness {}': 'Swappiness {}',
+    'Synchron': 'In sync',
+    'System & Entwicklung': 'System & development',
+    'System & Lüfter': 'System & fans',
+    'System (Dienste)': 'System (services)',
+    'System aktuell': 'System up to date',
+    'System jetzt aktualisieren?': 'Update the system now?',
+    'System-Datenträger – Aushängen, Umbenennen und Formatieren sind gesperrt.': 'System drive – unmounting, renaming and formatting are locked.',
+    'System-Logs (Journal)': 'System logs (journal)',
+    'System-Logs auf 200 MB kürzen?': 'Shrink system logs to 200 MB?',
+    'System-Protokoll (journald)': 'System log (journald)',
+    'System-Protokoll begrenzen': 'Limit system log',
+    'System-Snapshots': 'System snapshots',
+    'System-Snapshots brauchen Btrfs (hier: {}). Die Tuxdex-Backups decken das über Snapshots auf einem Ziel ab.': 'System snapshots need Btrfs (here: {}). The Tuxdex backups cover this via snapshots on a target.',
+    'System-Update': 'System update',
+    'System-Updates': 'System updates',
+    'System: {} frei ({} %)': 'System: {} free ({} %)',
+    'systemd-analyze ist nicht verfügbar.': 'systemd-analyze is not available.',
+    'Systemdateien': 'System files',
+    'Systemdatenträger': 'System drive',
+    'Systemeinstellungen (/etc)': 'System settings (/etc)',
+    'systemweit': 'system-wide',
+    'Tailscale an': 'Tailscale on',
+    'Tailscale ist verbunden (privates Netz zwischen deinen Geräten). Ohne Exit-Node läuft der Internetverkehr direkt, nicht über ein VPN.': 'Tailscale is connected (private network between your devices). Without an exit node, internet traffic goes directly, not through a VPN.',
+    'Tailscale ist verbunden – dein Internetverkehr läuft über den Exit-Node „{}“.': 'Tailscale is connected – your internet traffic goes through the exit node “{}”.',
+    'Tailscale ist {}.': 'Tailscale is {}.',
+    'Takt und Steckplätze meldet dieses System nicht (udev-DMI-Daten fehlen).': "This system doesn't report speed and slots (udev DMI data missing).",
+    'Taktgeschwindigkeit': 'Clock speed',
+    'Taskmanager': 'Task manager',
+    'Technik': 'Technology',
+    'Technologie': 'Technology',
+    'Telemetrie': 'Telemetry',
+    'Telemetrie abschalten': 'Disable telemetry',
+    'Telemetrie aktiv in:': 'Telemetry active in:',
+    'Telemetrie in Editoren': 'Telemetry in editors',
+    'Temperatur': 'Temperature',
+    'Temperatur · {}': 'Temperature · {}',
+    'Tempo': 'Speed',
+    'Test starten': 'Start test',
+    'Teste …': 'Testing …',
+    'timedatectl meldet keinen Zeitabgleich (kein systemd-timesyncd?).': 'timedatectl reports no time sync (no systemd-timesyncd?).',
+    'Tipp: HISTCONTROL=ignorespace in ~/.bashrc – Befehle mit Leerzeichen davor landen nicht im Verlauf.': "Tip: HISTCONTROL=ignorespace in ~/.bashrc – commands with a leading space don't end up in the history.",
+    'Tipp: Kill-Switch (Lockdown) einschalten – dann geht auch bei einem Verbindungsabbruch nichts am Tunnel vorbei.': 'Tip: turn on the kill switch (lockdown) – then nothing bypasses the tunnel even if the connection drops.',
+    'Tipp: „Automatische Updates aktivieren“ – der Dienst lädt die Signaturen dann selbstständig und täglich.': 'Tip: “Enable automatic updates” – the service then loads the signatures by itself daily.',
+    'Ton & Mikrofon': 'Sound & microphone',
+    'Tracker blockieren (DNS)': 'Block trackers (DNS)',
+    'Treiber': 'Driver',
+    'Treiber ok': 'Driver ok',
+    'Trennen': 'Disconnect',
+    'Trennt gemeinsamen Speicher zwischen Apps.': 'Separates shared memory between apps.',
+    'TRIM für SSDs': 'TRIM for SSDs',
+    'Turbo / Boost': 'Turbo / boost',
+    'Tuxdex (*.tar.gz *.tgz *.py);;Alle Dateien (*)': 'Tuxdex (*.tar.gz *.tgz *.py);;All files (*)',
+    'Tuxdex - Fehler': 'Tuxdex - error',
+    'Tuxdex - Start fehlgeschlagen': 'Tuxdex - start failed',
+    'Tuxdex auf Version {} aktualisieren?\n\nQuelle: github.com/{} ({})': 'Update Tuxdex to version {}?\n\nSource: github.com/{} ({})',
+    'Tuxdex beenden': 'Quit Tuxdex',
+    'Tuxdex ist als Paket installiert – bitte das Archiv (tuxdex-X.Y.Z.tar.gz) oder den Ordner mit PKGBUILD wählen.': 'Tuxdex is installed as a package – please choose the archive (tuxdex-X.Y.Z.tar.gz) or the folder with the PKGBUILD.',
+    'Tuxdex ist in der <b>Alpha-Phase</b>. Aktionen mit Administrator-Rechten (root) ändern dein System direkt – z. B. Pakete, Datenträger, Swap, Firewall, Systemdateien. Trotz Rückfragen und Prüfungen können Fehler passieren, bis hin zu Datenverlust oder einem System, das nicht mehr startet.<br><br><b>Nutzung auf eigenes Risiko.</b> Es gibt keine Gewährleistung (MIT-Lizenz). Lege vorher ein Backup an und lies bei jeder Rückfrage, welcher Befehl ausgeführt wird – er steht immer im Ausgabefeld.': 'Tuxdex is in the <b>alpha stage</b>. Actions with administrator rights (root) change your system directly – e.g. packages, drives, swap, firewall, system files. Despite confirmations and checks, errors can happen, up to data loss or a system that no longer boots.<br><br><b>Use at your own risk.</b> There is no warranty (MIT license). Make a backup first and read which command will run at every confirmation – it is always shown in the output box.',
+    'Tuxdex jetzt neu starten?': 'Restart Tuxdex now?',
+    'Tuxdex {} aus {} installieren?': 'Install Tuxdex {} from {}?',
+    'Tuxdex-Update wählen': 'Choose Tuxdex update',
+    'tuxdex-X.Y.Z.tar.gz oder (bei Skript-Start) eine tuxdex.py': 'tuxdex-X.Y.Z.tar.gz or (when started as a script) a tuxdex.py',
+    'Typ': 'Type',
+    'Typische Platzfresser & Aufräumen': 'Typical space hogs & cleanup',
+    'Täglich': 'Daily',
+    'täglich': 'daily',
+    'udisks hat abgelehnt – versuche es mit sudo …': 'udisks refused – trying with sudo …',
+    'udisksctl ist nicht installiert.\n\nsudo pacman -S udisks2': 'udisksctl is not installed.\n\nsudo pacman -S udisks2',
+    'ufw installieren': 'Install ufw',
+    'Uhrzeit (NTP)': 'Time (NTP)',
+    'Umbenennen': 'Rename',
+    'Umfang wird berechnet …': 'Calculating size …',
+    'Umfang: {}': 'Size: {}',
+    'Umgebungsvariable': 'Environment variable',
+    'Umgebungsvariablen': 'Environment variables',
+    'Unauffällig': 'Unremarkable',
+    'Unbegrenzt': 'Unlimited',
+    'Unbekannt': 'Unknown',
+    'unbekannt': 'unknown',
+    'unbekanntes Datum: {}': 'unknown date: {}',
+    'Unbenutzte entfernen': 'Remove unused',
+    'unerwartete Antwort von bash.ws': 'unexpected response from bash.ws',
+    'unerwarteter Dateiname im PKGBUILD: {}': 'unexpected file name in PKGBUILD: {}',
+    'Ungenutzte Flatpak-Laufzeiten entfernen?': 'Remove unused Flatpak runtimes?',
+    'Ungenutzte Laufzeiten entfernen': 'Remove unused runtimes',
+    'Ungespeicherte Daten gehen verloren.': 'Unsaved data will be lost.',
+    'Ungewöhnlich:': 'Unusual:',
+    'Ungültige Bezeichnung': 'Invalid label',
+    'Ungültige Eingabe': 'Invalid input',
+    'ungültiger Zielpfad oder am Zielort existiert bereits eine Datei': 'invalid target path or a file already exists at the target',
+    'Ungültiges Ziel': 'Invalid target',
+    'unsicherer Eintrag im Archiv: {}': 'unsafe entry in archive: {}',
+    'unter 1 Min': 'under 1 min',
+    'Unternehmen': 'Company',
+    'Unverschlüsselt': 'Unencrypted',
+    'Update abbrechen': 'Cancel update',
+    'Update abgebrochen.': 'Update cancelled.',
+    'Update abgeschlossen.': 'Update finished.',
+    'Update da': 'Update available',
+    'Update läuft': 'Update running',
+    'Update läuft … Rückfragen erscheinen als Fenster.': 'Update running … questions appear as windows.',
+    'Update starten': 'Start update',
+    'Update verfügbar': 'Update available',
+    'Update-Informationen': 'Update information',
+    'Update-Quelle gespeichert.': 'Update source saved.',
+    'Updates prüfen und einspielen (pacman, AUR, Flatpak), Major-Updates erkennen': 'Check and install updates (pacman, AUR, Flatpak), detect major updates',
+    'Updates schließen Lücken in: {}.': 'Updates close vulnerabilities in: {}.',
+    'URSPRÜNGLICHER ORT': 'ORIGINAL LOCATION',
+    'USB-Massenspeicher (USB-Ebene):': 'USB mass storage (USB level):',
+    'USB-Schutz (usbguard)': 'USB protection (usbguard)',
+    'usbguard blockiert unbekannte USB-Geräte (Schutz gegen manipulierte Sticks). Nur bei physischem Zugriff Fremder sinnvoll.': 'usbguard blocks unknown USB devices (protection against manipulated sticks). Only useful if strangers have physical access.',
+    'usbguard ist installiert, der Dienst läuft nicht.': "usbguard is installed, the service isn't running.",
+    'usbguard läuft.': 'usbguard is running.',
+    'Veraltet': 'Outdated',
+    'Verbinde …': 'Connecting …',
+    'Verbinden': 'Connect',
+    'Verbindungsgeschwindigkeit': 'Link speed',
+    'Verbunden': 'Connected',
+    'Verfügbar': 'Available',
+    'Verfügbare Updates': 'Available updates',
+    'Verfügbarer Swap': 'Swap available',
+    'Verlauf der letzten {} s · aktuell {}': 'History of the last {} s · current {}',
+    'Verschlüsselt': 'Encrypted',
+    'Verschlüsselt (geöffnet)': 'Encrypted (open)',
+    'Verschlüsselte Archive brauchen das Passwort – das wird nicht gespeichert. Für den Zeitplan Snapshots oder unverschlüsselte Archive verwenden.': "Encrypted archives need the password – it isn't saved. Use snapshots or unencrypted archives for the schedule.",
+    'Verschlüsselte Archive brauchen ein Passwort und laufen nur aus dem Fenster.': 'Encrypted archives need a password and only run from the window.',
+    'Verschlüsselte Partition – bitte mit cryptsetup/Dateimanager entsperren.': 'Encrypted partition – please unlock with cryptsetup/file manager.',
+    'Version {}': 'Version {}',
+    'Version {}  ·  {}': 'Version {}  ·  {}',
+    'Version {} verfügbar': 'Version {} available',
+    'Version {} · Zweig {} · Quelle {} · {} installiert · {}': 'Version {} · branch {} · source {} · {} installed · {}',
+    'Versionen behalten': 'Keep versions',
+    'Versionsstand – Treiber, Microcode, BIOS': 'Version status – drivers, microcode, BIOS',
+    'Verwaiste Pakete': 'Orphaned packages',
+    'Verwaiste Pakete & Paket-Cache': 'Orphaned packages & package cache',
+    'Verwalten': 'Manage',
+    'Verwendeter Swap': 'Swap used',
+    'Video dekodieren': 'Video decode',
+    'Video kodieren': 'Video encode',
+    'Virtualisierung': 'Virtualization',
+    'Virtualisierung (KVM)': 'Virtualization (KVM)',
+    'Virtuell': 'Virtual',
+    'Virtuelle Maschine': 'Virtual machine',
+    'Virtuelle Maschine oder unbekannte CPU – der Host lädt den Microcode.': 'Virtual machine or unknown CPU – the host loads the microcode.',
+    'Virtuelle Maschine – der Host liefert den Microcode.': 'Virtual machine – the host provides the microcode.',
+    'Virtuelle Prozessoren': 'Virtual processors',
+    'Voll': 'Full',
+    'voll': 'full',
+    'voll in': 'full in',
+    'Voll in': 'Full in',
+    'voll in {}:{} h': 'full in {}:{} h',
+    'Vollversion': 'Full version',
+    'Vollversion ausgewählt.': 'Full version selected.',
+    'Vollzugriff auf das ganze Dateisystem – hebt die Abschottung weitgehend auf.': 'Full access to the entire file system – largely removes the isolation.',
+    'vom System': 'from the system',
+    'vom System · angepasst': 'from the system · customized',
+    'von dir': 'by you',
+    'vor {} Min.': '{} min ago',
+    'vor {} Std.': '{} h ago',
+    'vor {} Tagen': '{} days ago',
+    'Vorbereiten': 'Preparing',
+    'Vorbereiten …': 'Preparing …',
+    'Vorgang abbrechen': 'Cancel operation',
+    'Vorhandene Backups & Wiederherstellen': 'Existing backups & restore',
+    'Vorsicht': 'Caution',
+    'VPN-Verbindung aktiv: {}.': 'VPN connection active: {}.',
+    'VS Code / VSCodium senden keine Telemetrie (oder sind nicht installiert). Browser-Telemetrie bitte in dessen Einstellungen prüfen.': "VS Code / VSCodium don't send telemetry (or aren't installed). Please check browser telemetry in its settings.",
+    'Vulkan-Version': 'Vulkan version',
+    'Wahrscheinlich eine große Datei oder ein Archiv nach:': 'Probably a large file or archive after:',
+    'Wartet': 'Waiting',
+    'wartet (E/A)': 'waiting (I/O)',
+    'wartet auf Freigabe': 'waiting for approval',
+    'Wartet beim Start aufs Netzwerk – auf Desktops meist unnötig.': 'Waits for the network at startup – usually unnecessary on desktops.',
+    'Was belegt den Platz?': 'What is using the space?',
+    'Was du hier einstellst, gilt für jede Flatpak-App – einzelne Apps können es wieder überschreiben.': 'What you set here applies to every Flatpak app – individual apps can override it.',
+    'Was scannen?': 'What to scan?',
+    'Was sichern?': 'What to back up?',
+    'Wayland-Fenster': 'Wayland windows',
+    'Webcam, Controller, USB-Geräte usw. – sehr weitreichend.': 'Webcam, controllers, USB devices etc. – very far-reaching.',
+    'Webserver': 'Web server',
+    'Webserver (HTTPS)': 'Web server (HTTPS)',
+    'Wechseldatenträger': 'Removable',
+    'Weder ufw noch firewalld gefunden.': 'Neither ufw nor firewalld found.',
+    'Weicht von der Voreinstellung der App ab': "Differs from the app's default",
+    'Weitere Punkte für ein gepflegtes Arch-System. Grün passt, Gelb lohnt einen Blick, Grau ist optional oder nur ein Hinweis. Knöpfe ändern nur, was dabeisteht.': "More points for a well-maintained Arch system. Green is fine, yellow is worth a look, grey is optional or just a note. Buttons only change what's written next to them.",
+    'Werbung blockieren (DNS)': 'Block ads (DNS)',
+    'Werkzeug fehlt': 'Tool missing',
+    'Wert': 'Value',
+    'Wert {}': 'Value {}',
+    'Wichtige offen': 'Important pending',
+    'Wie?': 'How?',
+    'Wiedergabe und Aufnahme über PulseAudio/PipeWire.': 'Playback and recording via PulseAudio/PipeWire.',
+    'Wiederhergestellt nach {}': 'Restored to {}',
+    'Wiederhergestellt: {}': 'Restored: {}',
+    'Wiederhergestellt_{}': 'Restored_{}',
+    'Wiederherstellen': 'Restore',
+    'Wiederherstellen einmal ausprobieren, bevor es ernst wird.': 'Try a restore once before it matters.',
+    'Wiederherstellen nach …': 'Restore to …',
+    'Wird abgebrochen …': 'Cancelling …',
+    'Wird benötigt von:': 'Required by:',
+    'wird berechnet …': 'calculating …',
+    'Wird ermittelt …': 'Determining …',
+    'Wird für die Dauer des Programmlaufs gemerkt – du musst es danach nicht erneut eingeben.': "Remembered while the program is running – you won't have to enter it again.",
+    'Wird gemessen …': 'Measuring …',
+    'Wirkt nach einem Neustart von Tuxdex.': 'Takes effect after restarting Tuxdex.',
+    'WOFÜR': 'FOR',
+    'Woher': 'From',
+    'Wohin? – alle angehakten Ziele werden gleichzeitig beschrieben': 'Where to? – all checked targets are written at the same time',
+    'Wähle oben ein Laufwerk oder eine Partition aus.': 'Select a drive or partition above.',
+    'Wöchentlich': 'Weekly',
+    'wöchentlich': 'weekly',
+    'X11 nur als Ausweichlösung': 'X11 only as fallback',
+    'X11 nur benutzen, wenn kein Wayland läuft.': "Use X11 only when Wayland isn't running.",
+    'X11-Fenster': 'X11 windows',
+    'xfs (Linux)': 'xfs (Linux)',
+    'xz – am kleinsten, langsam': 'xz – smallest, slow',
+    'z. B. 22 oder 8000:8100': 'e.g. 22 or 8000:8100',
+    'z. B. Debugger (ptrace) erlauben.': 'e.g. allow debuggers (ptrace).',
+    'z. B. firefox htop  ·  bei Flatpak: org.gimp.GIMP': 'e.g. firefox htop  ·  for Flatpak: org.gimp.GIMP',
+    'z. B. ~/Spiele oder /mnt/daten': 'e.g. ~/Games or /mnt/data',
+    'Zeilen, die nach Passwort oder Token aussehen, in:': 'Lines that look like a password or token, in:',
+    'Zeitplan': 'Schedule',
+    'Zeitplan aktiv': 'Schedule active',
+    'Zeitplan aus': 'Schedule off',
+    'Zeitplan:': 'Schedule:',
+    'Ziel ist voll': 'Target is full',
+    'Zombie': 'Zombie',
+    'zstd – schnell, gut (empfohlen)': 'zstd – fast, good (recommended)',
+    'Zu den Updates': 'Go to updates',
+    'zu viele Dateien': 'too many files',
+    'Zugesichert': 'Committed',
+    'Zugriff': 'Access',
+    'Zugriff auf alle deine Dateien im Home-Ordner.': 'Access to all your files in the home folder.',
+    'Zugriff auf den Druckdienst.': 'Access to the printing service.',
+    'Zugriff auf die Konfiguration des Systems.': 'Access to the system configuration.',
+    'Zuletzt geprüft': 'Last checked',
+    'Zuletzt geprüft: {}': 'Last checked: {}',
+    'Zum Aktualisieren wird das Paket mit pacman installiert – dafür ist das sudo-Passwort nötig. Ohne Anmeldung wird nichts heruntergeladen oder verändert.': 'To update, the package is installed with pacman – this needs the sudo password. Without logging in, nothing is downloaded or changed.',
+    'Zum Aufräumen': 'Go to cleanup',
+    'Zum Backup': 'Go to backup',
+    'Zum Formatieren eine Partition auswählen.': 'Select a partition to format.',
+    'Zum Formatieren oder Prüfen erst aushängen.': 'Unmount first to format or check.',
+    'Zum Swap': 'Go to swap',
+    'Zur Bestätigung den Gerätenamen eintippen': 'Type the device name to confirm',
+    'Zur Vollversion {} wechseln': 'Switch to full version {}',
+    'Zurücksetzen': 'Reset',
+    'Zurückspielen': 'Restore',
+    'Zustand': 'Health',
+    'Zustand = heutige volle Kapazität im Vergleich zum Neuzustand.': "Health = today's full capacity compared to new.",
+    'Zustand {} % der Originalkapazität': 'Health {} % of original capacity',
+    'Zweig {}': 'Branch {}',
+    'Zwischenspeicher': 'Cache',
+    'zähle Dateien …': 'counting files …',
+    '{}\n\n(Details auch in {})': '{}\n\n(Details also in {})',
+    '{}\n{} eigene Einstellung(en)': '{}\n{} own setting(s)',
+    '{}  (Version {})': '{}  (version {})',
+    '{}  ({} belegt)': '{}  ({} used)',
+    '{}  {} System-Update{}': '{}  {} system update{}',
+    '{}  ·  {}  ·  {} frei': '{}  ·  {}  ·  {} free',
+    '{}  ·  {} Kerne / {} Threads': '{}  ·  {} cores / {} threads',
+    '{} (benötigt von {})': '{} (required by {})',
+    '{} alte{} Vorgang/Vorgänge beendet.': '{} old operation(s) ended.',
+    '{} Apps · {}': '{} apps · {}',
+    '{} aus dem Autostart entfernen?': 'Remove {} from autostart?',
+    '{} ausgewählt · {} werden frei': '{} selected · {} will be freed',
+    '{} aushängen und ausschalten?': 'Unmount and power off {}?',
+    '{} Bedrohung{} gefunden': '{} threat{} found',
+    '{} behebbar': '{} fixable',
+    '{} beim Start nicht mehr ausführen?\n\n{}\nRückgängig: sudo systemctl enable {}': 'Stop running {} at startup?\n\n{}\nUndo: sudo systemctl enable {}',
+    '{} Datei(en) aus der Quarantäne unwiderruflich löschen?': 'Permanently delete {} file(s) from the quarantine?',
+    '{} Dateien/s · {}/s': '{} files/s · {}/s',
+    '{} deaktiviert – wirkt beim nächsten Start.': '{} disabled – takes effect at the next boot.',
+    '{} deinstallieren?': 'Uninstall {}?',
+    '{} Dienst(e)': '{} service(s)',
+    '{} Dumps': '{} dumps',
+    '{} enthält Kommentare oder ist ungültig – bitte im Editor unter Einstellungen → Telemetry selbst auf „off“ stellen.': '{} contains comments or is invalid – please set it to “off” yourself in the editor under Settings → Telemetry.',
+    '{} enthält Version {} – installiert ist {}. Trotzdem neu installieren?': '{} contains version {} – installed is {}. Reinstall anyway?',
+    '{} existiert schon und ist kein Swapfile. Tuxdex überschreibt keine anderen Dateien – bitte einen anderen Namen wählen.': "{} already exists and is not a swap file. Tuxdex doesn't overwrite other files – please choose a different name.",
+    '{} fehlt – bekannte CPU-Sicherheitslücken bleiben offen. Wirkt nach dem nächsten Neustart.': '{} is missing – known CPU vulnerabilities stay open. Takes effect after the next restart.',
+    '{} für Verbindungen aus dem Netz freigeben?\n\nNur tun, wenn andere Geräte diesen Dienst erreichen sollen.': 'Allow {} for connections from the network?\n\nOnly do this if other devices should reach this service.',
+    '{} GB RAM – mit 10–20 bleibt mehr im schnellen Arbeitsspeicher.': '{} GB RAM – with 10–20 more stays in fast memory.',
+    '{} GHz': '{} GHz',
+    '{} gibt es nicht.': "{} doesn't exist.",
+    '{} Hinweise': '{} notice(s)',
+    '{} Hinweis{}': '{} notice{}',
+    '{} ist eine Verknüpfung – bitte den echten Pfad angeben.': '{} is a link – please enter the real path.',
+    '{} ist eingehängt ({})': '{} is mounted ({})',
+    '{} ist geöffnet/aktiv ({})': '{} is open/active ({})',
+    '{} ist keine normale Datei.': '{} is not a regular file.',
+    '{} ist unverschlüsselt – Passwörter und Schlüssel aus dem RAM können dort lesbar auf der Platte landen. Abhilfe: Swap-Partition entfernen und ein Swapfile auf der verschlüsselten Systempartition anlegen.': '{} is unencrypted – passwords and keys from RAM can end up readable on disk there. Fix: remove the swap partition and create a swap file on the encrypted system partition.',
+    '{} Jahre alt': '{} years old',
+    '{} kann jetzt entfernt werden.': '{} can now be removed.',
+    '{} kann nur ausgehängt umbenannt werden.': '{} can only be renamed when unmounted.',
+    '{} konnte nicht geprüft werden (lsblk).': '{} could not be checked (lsblk).',
+    '{} Laufwerk{}': '{} drive{}',
+    '{} läuft': '{} running',
+    '{} läuft nur mit dem einfachen Bildschirmtreiber {} – keine Beschleunigung.': '{} only runs with the basic display driver {} – no acceleration.',
+    '{} Mbit/s': '{} Mbit/s',
+    '{} Meldungen': '{} messages',
+    '{} Min': '{} min',
+    '{} min {} s': '{} min {} s',
+    '{} Monate alt': '{} months old',
+    '{} ms': '{} ms',
+    '{} nicht mehr automatisch starten und jetzt stoppen?': 'Stop starting {} automatically and stop it now?',
+    '{} offen': '{} open',
+    '{} ohne Fix': '{} without fix',
+    '{} Ordner': '{} folders',
+    '{} Paket(e) deinstallieren? ({})': 'Uninstall {} package(s)? ({})',
+    '{} Pakete · {}': '{} packages · {}',
+    '{} Pakete, die nichts mehr braucht.': '{} packages nothing needs anymore.',
+    '{} Prozesse': '{} processes',
+    '{} Regel(n)': '{} rule(s)',
+    '{} s': '{} s',
+    '{} schließt CPU-Sicherheitslücken (z. B. Spectre).': '{} closes CPU vulnerabilities (e.g. Spectre).',
+    '{} Server': '{} servers',
+    '{} startet jetzt automatisch.': '{} now starts automatically.',
+    '{} startet {} automatisch.': '{} starts {} automatically.',
+    '{} Std {} Min': '{} h {} min',
+    '{} System-Update · {} wichtig': '{} system update · {} important',
+    '{} System-Updates': '{} system updates',
+    '{} System-Updates · {} wichtig': '{} system updates · {} important',
+    '{} Tage alt': '{} days old',
+    '{} Threads': '{} threads',
+    '{} Treffer': '{} hits',
+    '{} Updates': '{} updates',
+    '{} Updates offen, {} wichtig.': '{} updates pending, {} important.',
+    '{} Updates offen.': '{} updates pending.',
+    '{} Updates verfügbar': '{} updates available',
+    '{} Updates · {} wichtig': '{} updates · {} important',
+    '{} verwaist': '{} orphaned',
+    '{} vom {} – wird bei jedem Backup erneuert. Neu installieren: pacman -S --needed - < pakete.txt': '{} from {} – renewed with every backup. Reinstall with: pacman -S --needed - < pakete.txt',
+    '{} von {}': '{} of {}',
+    '{} von {} Zielen erfolgreich · {} · Dauer {}:{}:{}': '{} of {} targets successful · {} · duration {}:{}:{}',
+    '{} Wh': '{} Wh',
+    '{} wird als Swap benutzt': '{} is used as swap',
+    '{} wird gestartet …': 'Starting {} …',
+    '{} wird {} …': '{} is {} …',
+    '{} wurde nicht gefunden.': '{} was not found.',
+    '{} · gestartet von {}': '{} · started by {}',
+    '{} · höchstens {} Zeichen (Buchstaben, Ziffern, Leerzeichen, _ . -)': '{} · at most {} characters (letters, digits, spaces, _ . -)',
+    '{} · Kernel-Treiber {} ({})': '{} · kernel driver {} ({})',
+    '{} · NVIDIA-Treiber {}': '{} · NVIDIA driver {}',
+    '{} · PID {} · {} · nice {}': '{} · PID {} · {} · nice {}',
+    '{} · Priorität {}': '{} · priority {}',
+    '{} · Revision {}': '{} · revision {}',
+    '{} · Zweig {}': '{} · branch {}',
+    '{} · {} frei': '{} · {} free',
+    '{} · {} Prozesse · {}': '{} · {} processes · {}',
+    '{} · {} {} verfügbar.': '{} · {} {} available.',
+    '{} über {}': '{} via {}',
+    '{} – alle {} Prozesse': '{} – all {} processes',
+    '{}. Sieht aus wie ein normaler Internetanschluss': '{}. Looks like a normal internet connection',
+    '{}. Webseiten erkennen: {}. Manche Dienste (Streaming, Banken) sperren oder fragen dann nach.': '{}. Websites detect: {}. Some services (streaming, banks) then block or ask for verification.',
+    '{}:{} h': '{}:{} h',
+    '·  Gerät „{}“': '·  device “{}”',
+    '·  gültig bis {}': '·  valid until {}',
+    '·  Legacy-BIOS': '·  legacy BIOS',
+    '·  {} Regel{}': '·  {} rule{}',
+    '· Anmeldebildschirm nach {} Systemzeit': '· login screen after {} system time',
+    '· Auslastung vom Treiber nicht gemeldet': '· load not reported by the driver',
+    '· beim Hersteller nach einem neueren BIOS schauen (Sicherheits- und Stabilitätsfixes).': '· check the manufacturer for a newer BIOS (security and stability fixes).',
+    '· einige Dateien nicht lesbar (ggf. mit root-Rechten sichern)': '· some files not readable (back up with root rights if needed)',
+    '· einige Dateien verschwanden während des Backups': '· some files disappeared during the backup',
+    '· FAT32: Archiv wird in 4-GB-Teile geteilt': '· FAT32: archive is split into 4 GB parts',
+    '· geprüft': '· verified',
+    '· geschrieben (komprimiert): {}': '· written (compressed): {}',
+    '· installiert ist schon {} – nach einem Neustart aktiv.': '· {} is already installed – active after a restart.',
+    '· Mesa ist nicht installiert (keine 3D-Beschleunigung).': '· Mesa is not installed (no 3D acceleration).',
+    '· Mesa {}': '· Mesa {}',
+    '· Mesa/Vulkan {} verfügbar.': '· Mesa/Vulkan {} available.',
+    '· neue Version {} verfügbar.': '· new version {} available.',
+    '· Neustart': '· restart',
+    '· ohne Linux-Rechte (Besitzer/Rechte gehen verloren)': '· without Linux permissions (owner/permissions are lost)',
+    '· Passwort-Anmeldung erlaubt (Schlüssel sind sicherer)': '· password login allowed (keys are safer)',
+    '· root-Anmeldung erlaubt': '· root login allowed',
+    '· seit {}': '· since {}',
+    '· Vulkan {}': '· Vulkan {}',
+    '· {} % der Originalgröße': '· {} % of the original size',
+    '· {} ist nicht installiert – nur der Stand aus dem BIOS ist aktiv. Im Tab Sicherheit installierbar.': '· {} is not installed – only the BIOS version is active. Can be installed in the Security tab.',
+    '· {} Teile': '· {} parts',
+    '· {} Updates offen': '· {} updates pending',
+    '· {} wichtig': '· {} important',
+    '· {} {} → {} verfügbar.': '· {} {} → {} available.',
+    '· ⚠ keine Snapshots auf diesem Dateisystem – „Archiv“ wählen': '· ⚠ no snapshots on this file system – choose “Archive”',
+    '· 🔒 verschlüsselt': '· 🔒 encrypted',
+    'Ältere Fensterdarstellung – X11-Programme können Tastatur und Bildschirm anderer Programme mitlesen.': 'Older window display – X11 programs can read keyboard input and the screen of other programs.',
+    'Öffentliche IP konnte nicht ermittelt werden ({}).': 'Public IP could not be determined ({}).',
+    'Öffentliche IP prüfen': 'Check public IP',
+    'Öffentliche IP wird geprüft …': 'Checking public IP …',
+    'Öffentliche IP: <b>{}</b> · {} {} · {} ·': 'Public IP: <b>{}</b> · {} {} · {} ·',
+    'Öffentliche IP: <b>{}</b> · {} {} · {}<br>': 'Public IP: <b>{}</b> · {} {} · {}<br>',
+    'Öffentliche IP: noch nicht geprüft': 'Public IP: not checked yet',
+    'Öffentliche IP: noch nicht geprüft (Abfrage über am.i.mullvad.net)': 'Public IP: not checked yet (queried via am.i.mullvad.net)',
+    'Öffnen': 'Open',
+    'Ø Antwortzeit': 'Avg. response time',
+    'Über das Projekt': 'About the project',
+    'Über VPN': 'Via VPN',
+    'über {}': 'via {}',
+    'Übernehmen': 'Apply',
+    'Übersicht': 'Overview',
+    'Übersprungen (nicht angeschlossen): {}': 'Skipped (not connected): {}',
+    'Übrig von entfernten Kernels:': 'Left over from removed kernels:',
+    '– Abbrechen und den Ordner ausschließen oder erneut versuchen.': '– cancel and exclude the folder or try again.',
+    '– bei zram ist ein hoher Wert richtig.': '– with zram a high value is correct.',
+    '– bitte neu starten.': '– please restart.',
+    '– das VPN wird nicht als solches erkannt.': "– the VPN isn't recognized as such.",
+    '– dein Netzbetreiber kann die aufgerufenen Seiten sehen.': '– your network operator can see the sites you visit.',
+    '– große Ordner mit vielen Dateien brauchen etwas.': '– large folders with many files take a while.',
+    '– startet aber nicht automatisch.': "– but doesn't start automatically.",
+    '– Stick abziehen und neu einstecken, sonst „Diagnose“ klicken.': '– unplug and replug the stick, otherwise click “Diagnosis”.',
+    '„Im Cache“ ist Speicher für zuletzt gelesene Dateien – er wird sofort freigegeben, wenn Programme ihn brauchen. „Zugesichert“ ist, was Programme angefordert haben (auch ungenutzt).': '“Cached” is memory for recently read files – it is released immediately when programs need it. “Committed” is what programs have requested (even if unused).',
+    '„Signaturen aktualisieren“ klicken.</span>': 'click “Update signatures”.</span>',
+    '„Update da“ stützt sich auf die letzte Prüfung im Tab Updates.': '“Update available” is based on the last check in the Updates tab.',
+    '„{}“ erlauben?\n\nDas schwächt die Abschottung der App deutlich. Nur für vertrauenswürdige Apps.': "Allow “{}”?\n\nThis clearly weakens the app's isolation. Only for trusted apps.",
+    '• {} (PID {}) · {} RAM · läuft seit {}:{} h': '• {} (PID {}) · {} RAM · running for {}:{} h',
+    '… weitere Warnungen ausgeblendet': '… more warnings hidden',
+    '… {} weitere': '… {} more',
+    '← Zurück': '← Back',
+    '↑ {}/s · gesamt ↓ {} ↑ {}': '↑ {}/s · total ↓ {} ↑ {}',
+    '▲  Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko.': '▲  Alpha version: actions with root rights at your own risk.',
+    '▲ Die Signaturen sind {} Tage alt. Aktualisieren oder automatische Updates aktivieren.': '▲ The signatures are {} days old. Update them or enable automatic updates.',
+    '▲ Major-Version': '▲ Major version',
+    '▲ Noch keine Signaturen nach 10 Minuten – Meldungen oben prüfen.': '▲ Still no signatures after 10 minutes – check the messages above.',
+    '▲ System/Kernel': '▲ System/kernel',
+    '▲ Werden noch gebraucht – pacman entfernt dann auch die abhängigen Pakete oder bricht ab:': '▲ Still needed – pacman will then also remove the dependent packages or abort:',
+    '▲ Änderungen wirken beim nächsten Start der App – „Neu starten“ übernimmt sie sofort.': '▲ Changes take effect the next time the app starts – “Restart” applies them immediately.',
+    '○ aus': '○ off',
+    '○ aus – Scans mit clamscan': '○ off – scans with clamscan',
+    '● aktiv': '● active',
+    '● Keine Bedrohungen gefunden · {} Dateien in {}.': '● No threats found · {} files in {}.',
+    '● läuft – schnelle Scans': '● running – fast scans',
+    '● Signaturen sind geladen (Version {}, Stand {}).': '● Signatures are loaded (version {}, as of {}).',
+    '✕  Alle Daten auf {} ({}) werden unwiderruflich gelöscht.': '✕  All data on {} ({}) will be deleted irrevocably.',
+    '✕ Der ClamAV-Server lässt gerade keine Downloads zu (zu viele Anfragen von deiner IP, z. B. über ein VPN). Später erneut versuchen oder VPN-Server wechseln.': "✕ The ClamAV server currently doesn't allow downloads (too many requests from your IP, e.g. via a VPN). Try again later or switch VPN server.",
+    '✕ Der Kernel wurde aktualisiert, läuft aber noch in der alten Version ({}). Bis zum <b>Neustart</b> können neue USB-Sticks nicht erkannt werden, weil die Treiber des laufenden Kernels gelöscht wurden.': "✕ The kernel was updated but is still running the old version ({}). Until you <b>restart</b>, new USB sticks can't be detected because the running kernel's drivers were removed.",
+    '✕ Keine Verbindung zum ClamAV-Server – Internet/DNS prüfen.': '✕ No connection to the ClamAV server – check internet/DNS.',
+    '✕ USB-Speicher angeschlossen, aber ohne Treiber:': '✕ USB storage connected, but without driver:',
+    '✕ {} infizierte Datei{} gefunden · Dauer {}.': '✕ {} infected file{} found · duration {}.',
+    '⬆  Version {} verfügbar': '⬆  Version {} available',
+}
+
+
 def main():
     global _INVOKER
     if "--backup" in sys.argv:
         return run_backup_cli()
+    init_language()
     app = QApplication(sys.argv)
     app.setApplicationName("Tuxdex")
     app.setApplicationDisplayName("Tuxdex")
