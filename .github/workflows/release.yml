@@ -29,9 +29,16 @@ jobs:
         run: |
           ver=$(sed -n 's/^APP_VERSION = "\(.*\)"/\1/p' tuxdex.py)
           echo "version=$ver" >> "$GITHUB_OUTPUT"
-          awk -v v="## $ver" '$0==v && !d{f=1;d=1;next} /^#/{f=0} f' CHANGELOG.md > notes.md
+          section() { awk -v v="## $ver" '$0==v && !d{f=1;d=1;next} /^#/{f=0} f' "$1"; }
+          section CHANGELOG.md > notes.md
           printf '\n**Installation:** siehe [README → Installation](https://github.com/%s#installation)\n' \
             "$GITHUB_REPOSITORY" >> notes.md
+          if [ -f CHANGELOG.en.md ] && [ -n "$(section CHANGELOG.en.md | tr -d '[:space:]')" ]; then
+            printf '\n---\n\n### English\n' >> notes.md
+            section CHANGELOG.en.md >> notes.md
+            printf '\n**Installation:** see [README → Installation](https://github.com/%s/blob/main/README.en.md#installation)\n' \
+              "$GITHUB_REPOSITORY" >> notes.md
+          fi
 
       - name: Release anlegen
         env:

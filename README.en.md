@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.1-2fb3a3">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.2-2fb3a3">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-2fb3a3">
   <img alt="For Arch Linux" src="https://img.shields.io/badge/for-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -207,6 +207,7 @@ tuxdex.desktop         Application menu entry
 tuxdex.svg, *.png      App icon in all sizes
 PKGBUILD               Build recipe for makepkg / pacman
 CHANGELOG.md           Changes per version (German)
+CHANGELOG.en.md        Changes per version (English, shown by the updater in English)
 docs/                  Screenshots, README graphics and logo variants
 tools/                 Helper scripts (e.g. finding untranslated texts)
 .github/workflows/     Creates a GitHub release and the pacman repository for every new version on main

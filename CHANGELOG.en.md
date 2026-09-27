@@ -1,0 +1,50 @@
+# Changelog
+
+English version of [CHANGELOG.md](CHANGELOG.md). Entries before 1.0.0 are only available in German.
+
+## 1.1.2
+English changelog.
+
+- **Updater**: with English selected, the list of changes is now shown in English (`CHANGELOG.en.md`), no longer as a half-translated mix.
+- GitHub releases contain the notes in German and English.
+- "Installed: … (full version)" in the updater is translated too.
+
+## 1.1.1
+Bug fixes.
+
+- **Checklist stopped loading** after using "To 500 MB / 1 month" for the system log: with a restrictive umask, Tuxdex created the folder `/etc/systemd/journald.conf.d` without read permission, and the checklist failed with "Permission denied". Unreadable config folders are now skipped, and Tuxdex always creates folders and files readable (755/644), also for core dumps and the I/O scheduler. If you already have the error: just press the button once more and the permissions get repaired.
+- **Language switch**: the restart prompt is no longer half German, half English.
+
+## 1.1.0
+Security, English and a pacman repository of its own.
+
+**Security**
+- **Alpha notice**: before the first action with root rights, a notice appears once ("alpha stage, use at your own risk"). Tuxdex only runs root commands after you tick the box and click "Accept" – without consent every root action is cancelled, internally too. Plus an "ALPHA" badge in the top bar and a note in the password dialog.
+- **Security review of all root actions:**
+  - Creating a swapfile no longer overwrites existing files (before, a typo in the path could have overwritten any file with zeros as root). System folders (/etc, /usr, /boot …), symlinks and paths with ".." are blocked; an existing file must verifiably be a swapfile. On btrfs the swapfile is created correctly with `btrfs filesystem mkswapfile`.
+  - Removing swap only deletes the fstab line whose first field is exactly the path (before: every line containing the text) and creates `/etc/fstab.tuxdex.bak` first.
+  - Formatting: the last check before `mkfs` now also detects mounted partitions, open LUKS containers, LVM and active swap below the selected device.
+  - Quarantine: restored system files get their original owner and permissions back (never with setuid bits); the target must not exist.
+  - Helper files no longer live in a predictable folder in /tmp, but in /run/user/<uid> or ~/.cache.
+  - Drive labels must not start with "-" (would otherwise have been read as a command option).
+- Please report security issues by email – see `SECURITY.md`.
+
+**English**
+- Tuxdex is now available in English. The default is the system language; switch under Settings → Language (takes effect after a restart). Command output stays as it is.
+- English README (`README.en.md`) with a switch at the top of both READMEs.
+
+**Installation & project**
+- **pacman repository of its own**: every release contains the finished package and a repo database. With `[tuxdex]` in `/etc/pacman.conf`, Tuxdex installs and updates via `pacman -Syu` – no AUR needed (instructions in the README).
+- Issue templates for bug reports and ideas (German/English).
+- New screenshots (German and English), generated with sample data via `tools/screenshots.py`.
+- When updating, the updater only shows real new versions, no pre-releases from the changelog.
+
+## 1.0.0
+First official release. Version numbering starts over – earlier entries are the pre-releases up to 1.6.0-beta.12.
+
+- **11 modules** in one window: Updates, Software, Flatpak (permissions via switches), Drives, Storage, Backup, Swap, Task manager, Antivirus (ClamAV), Security, Users.
+- **Backup**: snapshots, mirrors or archives to several targets at once, custom names with date, schedule, restore, package list in the backup.
+- **Task manager**: processes grouped by program, performance tiles with details on click (CPU, RAM, drives, graphics, network, battery, fans), autostart and boot time.
+- **Security**: security check, checklist for maintenance, privacy & performance, DNS leak test, open ports, Mullvad VPN, firewall.
+- Tuxdex design throughout, in all pop-ups too; its own color palette independent of the desktop theme.
+- Note for installations before 1.0.0: because numbering starts over, the built-in updater does not offer 1.0.0 by itself. Reinstall once (see README → Installation); after that updates work normally again. The PKGBUILD sets `epoch=1` so pacman doesn't treat 1.0.0 as a downgrade.
