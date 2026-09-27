@@ -4612,6 +4612,157 @@ def public_ip_info():
         return json.loads(r.read().decode())
 
 
+def _pkg_version(*names):
+    """(name, version) des ersten installierten Pakets aus names – sonst (None, None)."""
+    for n in names:
+        try:
+            r = subprocess.run(["pacman", "-Q", n], capture_output=True, text=True, timeout=5)
+        except Exception:
+            return None, None
+        if r.returncode == 0 and r.stdout.split():
+            return n, r.stdout.split()[1]
+    return None, None
+
+
+def _pending_update(pkg):
+    """Neue Version aus der letzten Update-Prüfung oder None."""
+    for u in _load_json(UPDATE_CACHE, {}).get("updates", []):
+        if u.get("name") == pkg:
+            return u.get("new")
+    return None
+
+
+def version_status():
+    """Versionsstand von Grafiktreiber, CPU-Microcode, BIOS/UEFI, Kernel und Firmware.
+    [(titel, ton, kurz, detail)]"""
+    res = []
+    # --- Grafiktreiber ---
+    base = "/sys/class/drm"
+    seen = set()
+    try:
+        cards = sorted(c for c in os.listdir(base) if re.match(r"card\d+$", c))
+    except Exception:
+        cards = []
+    for c in cards:
+        dev = f"{base}/{c}/device"
+        try:
+            drv = os.path.basename(os.readlink(f"{dev}/driver"))
+        except OSError:
+            continue
+        vendor = _first_line(f"{dev}/vendor").replace("0x", "").lower()
+        device = _first_line(f"{dev}/device").replace("0x", "").lower()
+        if (vendor, device) in seen:
+            continue
+        seen.add((vendor, device))
+        name = _pci_name(vendor, device)
+        if drv == "nvidia":
+            ver = _first_line("/sys/module/nvidia/version")
+            pkg, pver = _pkg_version("nvidia", "nvidia-open", "nvidia-dkms", "nvidia-open-dkms", "nvidia-lts",
+                                     "nvidia-open-lts", "nvidia-580xx-dkms", "nvidia-470xx-dkms")
+            upkg, _ = _pkg_version("nvidia-utils")
+            new = _pending_update(pkg) if pkg else None
+            new = new or (_pending_update("nvidia-utils") if upkg else None)
+            txt = f"{name} · NVIDIA-Treiber {ver or pver or '?'}" + (f" (Paket {pkg})" if pkg else "")
+            if ver and pver and not pver.startswith(ver):
+                res.append(("Grafiktreiber", "warn", "Neustart nötig",
+                            txt + f" · installiert ist schon {pver} – nach einem Neustart aktiv."))
+            elif new:
+                res.append(("Grafiktreiber", "warn", "Update da", txt + f" · neue Version {new} verfügbar."))
+            else:
+                res.append(("Grafiktreiber", "ok", "Aktuell", txt + "."))
+        else:
+            mpkg, mver = _pkg_version("mesa")
+            vk = {"amdgpu": "vulkan-radeon", "radeon": "vulkan-radeon", "i915": "vulkan-intel",
+                  "xe": "vulkan-intel", "nouveau": "vulkan-nouveau"}.get(drv)
+            vpkg, vver = _pkg_version(vk) if vk else (None, None)
+            txt = f"{name} · Kernel-Treiber {drv} ({os.uname().release})"
+            if mver:
+                txt += f" · Mesa {mver.split('-')[0]}"
+            if vver:
+                txt += f" · Vulkan {vver.split('-')[0]}"
+            new = (_pending_update("mesa") if mpkg else None) or (_pending_update(vpkg) if vpkg else None)
+            if drv in ("simpledrm", "efifb", "vesafb"):
+                res.append(("Grafiktreiber", "warn", "Notfall-Treiber",
+                            f"{name} läuft nur mit dem einfachen Bildschirmtreiber {drv} – keine Beschleunigung."))
+            elif new:
+                res.append(("Grafiktreiber", "warn", "Update da", txt + f" · Mesa/Vulkan {new} verfügbar."))
+            else:
+                res.append(("Grafiktreiber", "ok" if mver else "info", "Aktuell" if mver else "Mesa fehlt",
+                            txt + ("." if mver else " · Mesa ist nicht installiert (keine 3D-Beschleunigung).")))
+    # --- CPU-Microcode ---
+    rev = re.search(r"^microcode\s*:\s*(\S+)", _read("/proc/cpuinfo"), re.M)
+    pkg, ok = microcode_state()
+    if pkg is None:
+        res.append(("CPU-Microcode", "off", "VM", "Virtuelle Maschine – der Host liefert den Microcode."
+                    + (f" Revision {rev.group(1)}." if rev else "")))
+    else:
+        _, pver = _pkg_version(pkg)
+        new = _pending_update(pkg)
+        txt = f"{cpu_model()} · Revision {rev.group(1) if rev else '?'}"
+        if not ok:
+            res.append(("CPU-Microcode", "warn", "Fehlt", txt + f" · {pkg} ist nicht installiert – nur der Stand "
+                        "aus dem BIOS ist aktiv. Im Tab Sicherheit installierbar."))
+        elif new:
+            res.append(("CPU-Microcode", "warn", "Update da", txt + f" · {pkg} {pver} → {new} verfügbar."))
+        else:
+            res.append(("CPU-Microcode", "ok", "Aktuell", txt + f" · {pkg} {pver}."))
+    # --- Mainboard / BIOS ---
+    dmi = "/sys/class/dmi/id"
+    board = " ".join(x for x in (_first_line(f"{dmi}/board_vendor"), _first_line(f"{dmi}/board_name")) if x)
+    bver, bdate = _first_line(f"{dmi}/bios_version"), _first_line(f"{dmi}/bios_date")
+    age = None
+    try:
+        age = (datetime.now() - datetime.strptime(bdate, "%m/%d/%Y")).days / 365.25
+    except ValueError:
+        pass
+    txt = f"{board or 'Mainboard unbekannt'} · BIOS/UEFI {bver or '?'}"
+    if bdate:
+        try:
+            txt += f" vom {datetime.strptime(bdate, '%m/%d/%Y'):%d.%m.%Y}"
+        except ValueError:
+            txt += f" vom {bdate}"
+    if age is not None and age >= 2:
+        res.append(("Mainboard & BIOS", "info", f"{age:.0f} Jahre alt",
+                    txt + " · beim Hersteller nach einem neueren BIOS schauen (Sicherheits- und Stabilitätsfixes)."))
+    else:
+        res.append(("Mainboard & BIOS", "ok" if age is not None else "off",
+                    f"{age * 12:.0f} Monate alt" if age is not None else "Unbekannt", txt + "."))
+    # --- Kernel ---
+    kpkg = {"lts": "linux-lts", "zen": "linux-zen", "hardened": "linux-hardened"}
+    rel = os.uname().release
+    kp = next((v for k, v in kpkg.items() if k in rel), "linux")
+    _, kver = _pkg_version(kp)
+    new = _pending_update(kp)
+    kbase = re.match(r"\d+(?:\.\d+)+", kver or "")
+    if kbase and not re.match(re.escape(kbase.group(0)) + r"(?![\d.])", rel):
+        res.append(("Kernel", "warn", "Neustart nötig", f"Läuft: {rel} · installiert: {kver} – nach einem Neustart "
+                    "aktiv."))
+    elif new:
+        res.append(("Kernel", "warn", "Update da", f"{rel} · {kp} {new} verfügbar."))
+    else:
+        res.append(("Kernel", "ok", "Aktuell", f"{rel}" + (f" ({kp})" if kver else "") + "."))
+    # --- Firmware über fwupd ---
+    if which("fwupdmgr"):
+        try:
+            r = subprocess.run(["fwupdmgr", "get-updates", "--json", "--no-unreported-check",
+                                "--no-metadata-check"], capture_output=True, text=True, timeout=25)
+            data = json.loads(r.stdout or "{}")
+            devs = [d.get("Name", "?") for d in data.get("Devices", []) if d.get("Releases")]
+            if devs:
+                res.append(("Firmware (fwupd)", "warn", f"{len(devs)} Updates",
+                            "Firmware-Updates verfügbar für: " + ", ".join(devs[:6])
+                            + ". Einspielen mit: fwupdmgr update"))
+            else:
+                res.append(("Firmware (fwupd)", "ok", "Aktuell", "fwupd kennt keine neueren Firmware-Versionen "
+                            "(BIOS, SSD, Dock …)."))
+        except Exception:
+            res.append(("Firmware (fwupd)", "off", "Nicht prüfbar", "fwupd hat nicht geantwortet."))
+    else:
+        res.append(("Firmware (fwupd)", "off", "Nicht installiert", "Optional: Mit fwupd lassen sich BIOS-, SSD- "
+                    "und Geräte-Firmware prüfen und aktualisieren (Paket fwupd)."))
+    return res
+
+
 def system_summary():
     osr = {}
     for line in _read("/etc/os-release").splitlines():
@@ -4946,6 +5097,13 @@ class TaskTab(Page):
         self.sys_grid.setVerticalSpacing(12)
         hw.body.addLayout(self.sys_grid)
         sl.addWidget(hw)
+        vp = Panel("Versionsstand – Treiber, Microcode, BIOS",
+                   [Button("↻", "icon", self.load_versions, "Neu prüfen")])
+        self.ver_box = QVBoxLayout()
+        self.ver_box.setSpacing(0)
+        vp.body.addLayout(self.ver_box)
+        vp.body.addWidget(Label("„Update da“ stützt sich auf die letzte Prüfung im Tab Updates.", "Hint", wrap=True))
+        sl.addWidget(vp)
         netp = Panel("Netzwerk & IP-Adressen", [Button("Öffentliche IP prüfen", "ghost", self.check_public_ip,
                                                        "Fragt am.i.mullvad.net nach deiner öffentlichen IP")])
         self.net_box = QVBoxLayout()
@@ -5213,7 +5371,22 @@ class TaskTab(Page):
 
     # ---- System-Ansicht ---------------------------------------------------
 
+    def load_versions(self):
+        def worker():
+            v = version_status()
+            ui(lambda: self._show_versions(v))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_versions(self, rows):
+        self._clear(self.ver_box)
+        for title, tone, short, detail in rows:
+            r = CheckRow(title)
+            r.set(tone, short, detail)
+            self.ver_box.addWidget(r)
+
     def load_system(self):
+        self.load_versions()
+
         def worker():
             info = system_summary()
             ifaces, gw, dns = net_interfaces()
