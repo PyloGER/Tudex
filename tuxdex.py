@@ -396,7 +396,14 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
+APP_STAGE = "alpha"        # Reifegrad – wird nur angezeigt, die Versionsnummer selbst bleibt ohne Zusatz
+
+
+def vlabel(v=None):
+    """Version zum Anzeigen: „1.1.3-alpha“; Beta-Stände („1.2.0-beta.1“) bleiben, wie sie sind."""
+    v = APP_VERSION if v is None else v
+    return v if "-" in v or not APP_STAGE or not re.match(r"\d", v) else f"{v}-{APP_STAGE}"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -12041,7 +12048,7 @@ class UpdatePanel(QWidget):
         head.setSpacing(12)
         self.badge = StatusBadge("off", "Noch nicht geprüft")
         head.addWidget(self.badge)
-        head.addWidget(Label(f"Installiert: {APP_VERSION}  ·  "
+        head.addWidget(Label(f"Installiert: {vlabel()}  ·  "
                              f"{'als Paket (pacman)' if SYSTEM_INSTALL else 'als Skript'}", "Value"))
         head.addStretch(1)
         self.b_check = Button("Nach Updates suchen", "ghost", self.check)
@@ -12055,12 +12062,12 @@ class UpdatePanel(QWidget):
         self.changes.hide()
         p.body.addWidget(self.changes)
 
-        # Version: Vollversion oder Beta – Umschalter wie in den Tabs
+        # Version: Stabil oder Beta – Umschalter wie in den Tabs
         self.branches = ["main", "beta"]
         cur = self.settings.get("branch", "main")
         if cur not in self.branches:
             self.branches.append(cur)
-        labels = {"main": "Vollversion", "beta": "Beta"}
+        labels = {"main": "Stabil", "beta": "Beta"}
         p.body.addWidget(Label("VERSION", "FieldLabel"))
         crow = QHBoxLayout()
         crow.setSpacing(12)
@@ -12150,24 +12157,24 @@ class UpdatePanel(QWidget):
             return
         if branch == "beta" and not ask_confirm(
                 self, "Beta-Versionen", "Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler "
-                "haben.\n\nZurück zur Vollversion geht jederzeit hier.", "Beta verwenden"):
+                "haben.\n\nZurück zur stabilen Version geht jederzeit hier.", "Beta verwenden"):
             self.channel.set(self.branches.index(old))
             return
         self.settings["branch"] = branch
         save_settings(self.settings)
-        self.app.set_status("Beta-Versionen aktiv." if branch == "beta" else "Vollversion ausgewählt.")
+        self.app.set_status("Beta-Versionen aktiv." if branch == "beta" else "Stabile Version ausgewählt.")
         self._show_channel_info()
         self.check()
 
     def _show_channel_info(self):
         """Welche Version gibt es in welchem Zweig – und was ist installiert?"""
         rv = self.remote_versions
-        inst = "Beta" if "beta" in APP_VERSION or "rc" in APP_VERSION else tr("Vollversion")
+        inst = "Beta" if "beta" in APP_VERSION or "rc" in APP_VERSION else tr("Stabil")
         parts = []
-        for b, name in (("main", "Vollversion"), ("beta", "Beta")):
+        for b, name in (("main", "Stabil"), ("beta", "Beta")):
             v = rv.get(b)
-            parts.append(f"{name}: <b>{v}</b>" if v else f"{name}: {'…' if b not in rv else '—'}")
-        self.channel_info.setText(" · ".join(parts) + f"<br>Installiert: <b>{APP_VERSION}</b> ({inst})")
+            parts.append(f"{name}: <b>{vlabel(v)}</b>" if v else f"{name}: {'…' if b not in rv else '—'}")
+        self.channel_info.setText(" · ".join(parts) + f"<br>Installiert: <b>{vlabel()}</b> ({inst})")
 
     def _auto_changed(self, on):
         self.settings["auto_check"] = on
@@ -12219,21 +12226,21 @@ class UpdatePanel(QWidget):
             return
         self.remote_version = ver
         newer = version_tuple(ver) > version_tuple(APP_VERSION)
-        # Von einer Beta zurück zur Vollversion: ältere Version anbieten, aber nicht beim Start aufdrängen
+        # Von einer Beta zurück zur stabilen Version: ältere Version anbieten, aber nicht beim Start aufdrängen
         back = not newer and self.settings.get("branch", "main") == "main" and \
             version_tuple(ver) < version_tuple(APP_VERSION)
-        self.b_update.setText(f"Zur Vollversion {ver} wechseln" if back else "Jetzt aktualisieren")
+        self.b_update.setText(f"Zur stabilen Version {vlabel(ver)} wechseln" if back else "Jetzt aktualisieren")
         self.b_update.setVisible(newer or back)
         self.app.show_update_hint(ver if newer else None)
         if back:
-            self.badge.set("info", f"Beta {APP_VERSION} installiert")
-            self.changes.setText(f"Die aktuelle Vollversion ist {ver}. Du nutzt noch die Beta {APP_VERSION} – "
-                                 "wechseln installiert die Vollversion.")
+            self.badge.set("info", f"Beta {vlabel()} installiert")
+            self.changes.setText(f"Die aktuelle stabile Version ist {vlabel(ver)}. Du nutzt noch die Beta {vlabel()} – "
+                                 "wechseln installiert die stabile Version.")
             self.changes.setVisible(not silent)
         elif newer:
-            self.badge.set("warn", f"Version {ver} verfügbar")
+            self.badge.set("warn", f"Version {vlabel(ver)} verfügbar")
             txt = changes_since(cl, APP_VERSION)
-            set_text_raw(self.changes, txt) if txt else self.changes.setText(f"Neue Version {ver}.")
+            set_text_raw(self.changes, txt) if txt else self.changes.setText(f"Neue Version {vlabel(ver)}.")
             self.changes.show()
             if silent and self.settings.get("ask_on_start", True):
                 self._offer_update(ver, txt)
@@ -12248,7 +12255,7 @@ class UpdatePanel(QWidget):
         set_msg_icon(box, QMessageBox.Information)
         box.setWindowTitle("Update verfügbar")
         box.setTextFormat(Qt.RichText)
-        box.setText(f"<b>Tuxdex {ver} ist verfügbar</b> – installiert ist {APP_VERSION}.")
+        box.setText(f"<b>Tuxdex {vlabel(ver)} ist verfügbar</b> – installiert ist {vlabel()}.")
         set_text_raw(box, changes_html or "", "setInformativeText")
         later = box.addButton("Später", QMessageBox.RejectRole)
         later.setProperty("variant", "ghost")
@@ -12419,8 +12426,8 @@ class UpdatePanel(QWidget):
         m = re.search(r"^pkgver=([\w.]+)", _read(os.path.join(src, "PKGBUILD")), re.M)
         ver = m.group(1) if m else "?"
         if version_tuple(ver) <= version_tuple(APP_VERSION):
-            if not ask_confirm(self, "Gleiche oder ältere Version", f"{origin} enthält Version {ver} – installiert ist "
-                               f"{APP_VERSION}. Trotzdem neu installieren?", "Installieren"):
+            if not ask_confirm(self, "Gleiche oder ältere Version", f"{origin} enthält Version {vlabel(ver)} – installiert ist "
+                               f"{vlabel()}. Trotzdem neu installieren?", "Installieren"):
                 self._prog_fail("Abgebrochen")
                 return
         elif not ask_confirm(self, "Aktualisieren", f"Tuxdex {ver} aus {origin} installieren?", "Aktualisieren"):
@@ -12590,7 +12597,7 @@ class SettingsPage(Page):
         txt = QVBoxLayout()
         txt.setSpacing(4)
         txt.addWidget(Label("Tuxdex", "PageTitle"))
-        txt.addWidget(Label(f"Version {APP_VERSION}  ·  {'als Paket installiert' if SYSTEM_INSTALL else 'als Skript gestartet'}",
+        txt.addWidget(Label(f"Version {vlabel()}  ·  {'als Paket installiert' if SYSTEM_INSTALL else 'als Skript gestartet'}",
                             "Value"))
         txt.addWidget(Label("Grafische Systemverwaltung für Arch Linux – alles in einem Fenster, ohne Terminal. "
                             "Befehle laufen sichtbar in der Ausgabe, root-Rechte werden nur bei Bedarf und "
@@ -12803,7 +12810,7 @@ class MainWindow(QWidget):
         self.upd_hint.hide()
         sl.addWidget(self.upd_hint)
         sl.addSpacing(12)
-        sl.addWidget(Label(f"Version {APP_VERSION}", "StatusText"))
+        sl.addWidget(Label(f"Version {vlabel()}", "StatusText"))
         root.addWidget(sb)
 
         # Tabs werden erst beim ersten Öffnen gebaut (spart RAM und Startzeit);
@@ -13305,7 +13312,7 @@ EN = {
     'Beta {} installiert': 'Beta {} installed',
     'Beta-Versionen': 'Beta versions',
     'Beta-Versionen aktiv.': 'Beta versions active.',
-    'Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler haben.\n\nZurück zur Vollversion geht jederzeit hier.': 'Beta versions get new features earlier but may still have bugs.\n\nYou can switch back to the full version here at any time.',
+    'Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler haben.\n\nZurück zur stabilen Version geht jederzeit hier.': 'Beta versions get new features earlier but may still have bugs.\n\nYou can switch back to the stable version here at any time.',
     'Betriebssystem': 'Operating system',
     'Betriebszeit': 'Uptime',
     'Bezeichnung': 'Label',
@@ -13392,7 +13399,7 @@ EN = {
     'Details ausblenden (oder Kachel erneut anklicken)': 'Hide details (or click the tile again)',
     'Diagnose': 'Diagnosis',
     'Die 20 schnellsten aktuellen HTTPS-Server suchen und als /etc/pacman.d/mirrorlist speichern? Die alte Liste bleibt als mirrorlist.bak.': 'Find the 20 fastest up-to-date HTTPS servers and save them as /etc/pacman.d/mirrorlist? The old list is kept as mirrorlist.bak.',
-    'Die aktuelle Vollversion ist {}. Du nutzt noch die Beta {} – wechseln installiert die Vollversion.': "The current full version is {}. You're still using beta {} – switching installs the full version.",
+    'Die aktuelle stabile Version ist {}. Du nutzt noch die Beta {} – wechseln installiert die stabile Version.': "The current stable version is {}. You're still using beta {} – switching installs the stable version.",
     'Die App hat noch keinen Datenordner ({}).': 'The app has no data folder yet ({}).',
     'Die Firewall filtert diese Ports.': 'The firewall filters these ports.',
     'Die Liste aller selbst installierten Pakete macht eine Neuinstallation leicht. Tuxdex legt sie in ~/.config/tuxdex ab und erneuert sie bei jedem Backup.': 'The list of all explicitly installed packages makes reinstalling easy. Tuxdex stores it in ~/.config/tuxdex and renews it with every backup.',
@@ -14352,8 +14359,8 @@ EN = {
     'voll in': 'full in',
     'Voll in': 'Full in',
     'voll in {}:{} h': 'full in {}:{} h',
-    'Vollversion': 'Full version',
-    'Vollversion ausgewählt.': 'Full version selected.',
+    'Stabil': 'Stable',
+    'Stabile Version ausgewählt.': 'Stable version selected.',
     'Vollzugriff auf das ganze Dateisystem – hebt die Abschottung weitgehend auf.': 'Full access to the entire file system – largely removes the isolation.',
     'vom System': 'from the system',
     'vom System · angepasst': 'from the system · customized',
@@ -14445,7 +14452,7 @@ EN = {
     'Zum Formatieren oder Prüfen erst aushängen.': 'Unmount first to format or check.',
     'Zum Swap': 'Go to swap',
     'Zur Bestätigung den Gerätenamen eintippen': 'Type the device name to confirm',
-    'Zur Vollversion {} wechseln': 'Switch to full version {}',
+    'Zur stabilen Version {} wechseln': 'Switch to stable version {}',
     'Zurücksetzen': 'Reset',
     'Zurückspielen': 'Restore',
     'Zustand': 'Health',

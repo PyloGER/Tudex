@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3
+Reifegrad sichtbar.
+
+- Tuxdex zeigt seinen Reifegrad jetzt an der Version: **1.1.3-alpha** (Statusleiste, Updater, Einstellungen, GitHub-Release, README). Die Versionsnummer selbst bleibt ohne Zusatz, damit Updates und pacman richtig vergleichen.
+- Update-Kanal „Vollversion“ heißt jetzt **„Stabil“** – passt besser zu einer Alpha. Beta bleibt Beta.
+
 ## 1.1.2
 Englischer Changelog.
 

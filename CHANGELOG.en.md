@@ -2,6 +2,12 @@
 
 English version of [CHANGELOG.md](CHANGELOG.md). Entries before 1.0.0 are only available in German.
 
+## 1.1.3
+Maturity shown.
+
+- Tuxdex now shows its maturity with the version: **1.1.3-alpha** (status bar, updater, settings, GitHub release, README). The version number itself stays without a suffix so updates and pacman compare correctly.
+- Update channel "full version" is now called **"Stable"** – fits an alpha better. Beta stays beta.
+
 ## 1.1.2
 English changelog.
 
