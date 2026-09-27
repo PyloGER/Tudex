@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.4
+- Sicherheits-Check prüft zusätzlich:
+  - **CPU-Microcode** (`intel-ucode`/`amd-ucode`) – fehlt er, per Klick installieren.
+  - **Swap-Verschlüsselung** – warnt, wenn Swap unverschlüsselt auf der Platte liegt (zram und Swap auf LUKS gelten als sicher).
+  - **Kernel-Schutz** – sperrt per Klick kexec und SysRq (`/etc/sysctl.d/90-tuxdex-hardening.conf`), ohne Nachteile im Alltag.
+
 ## 1.5.3
 - Aktualisierung startet erst nach der Admin-Anmeldung (sudo-Passwort). Ohne Anmeldung wird nichts heruntergeladen oder verändert – gilt für GitHub, Datei und Ordner.
 - Neuer Fortschrittsbalken mit Schritt-Anzeige: Dateien laden (x/n), Paket bauen, prüfen, installieren, fertig. Bei Fehlern zeigt er, an welcher Stelle es hakt.
