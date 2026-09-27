@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.9"
+APP_VERSION = "1.6.0-beta.10"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -8033,7 +8033,8 @@ def swap_state():
 
 
 # Kernel-Schutz: nur Werte, die im Alltag nichts kaputt machen
-HARDEN_SYSCTL = {"kernel.kexec_load_disabled": "1", "kernel.sysrq": "0"}
+HARDEN_SYSCTL = {"kernel.kexec_load_disabled": "1", "kernel.sysrq": "0", "kernel.dmesg_restrict": "1",
+                 "kernel.kptr_restrict": "2"}
 HARDEN_FILE = "/etc/sysctl.d/90-tuxdex-hardening.conf"
 
 
@@ -8102,6 +8103,254 @@ def svc_enabled(name):
                               timeout=5).stdout.strip() == "enabled"
     except Exception:
         return False
+
+
+# --------------------------------------------------------------------------
+# Checkliste: Wartung, Datenschutz, Performance (Sicherheit → Checkliste)
+# --------------------------------------------------------------------------
+
+JOURNALD_FILE = "/etc/systemd/journald.conf.d/90-tuxdex.conf"
+COREDUMP_FILE = "/etc/systemd/coredump.conf.d/90-tuxdex.conf"
+IOSCHED_FILE = "/etc/udev/rules.d/60-tuxdex-ioscheduler.rules"
+# Muster für Zugangsdaten in der Shell-History – nur gezählt, nie angezeigt
+SECRET_RE = re.compile(r"(passw(or)?d\s*[=:]|--password[= ]\S|\btoken\s*[=:]|api[_-]?key\s*[=:]|secret\s*[=:]|"
+                       r"Authorization:\s*Bearer|\bAKIA[0-9A-Z]{16}\b|\bghp_[A-Za-z0-9]{30,}|\bglpat-[\w-]{20,}|"
+                       r"\bsk-[A-Za-z0-9]{20,}|\bxox[bap]-[\w-]{10,}|sshpass\s+-p\s*\S)", re.I)
+
+
+def _conf_value(paths, section, key):
+    """Letzter Wert eines Schlüssels aus systemd-artigen .conf-Dateien (inkl. .d-Ordner)."""
+    val = None
+    files = []
+    for p in paths:
+        if os.path.isdir(p):
+            files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".conf"))
+        elif os.path.exists(p):
+            files.append(p)
+    for f in files:
+        cur = None
+        for line in _read(f).splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                cur = line.strip("[]")
+            elif cur == section and re.match(rf"{key}\s*=", line):
+                val = line.split("=", 1)[1].strip()
+    return val
+
+
+def _pacman_siglevel():
+    """Liste der Stellen in pacman.conf, an denen Signaturen abgeschaltet sind."""
+    bad, sect = [], None
+    for line in _read("/etc/pacman.conf").splitlines():
+        s = line.split("#", 1)[0].strip()
+        if s.startswith("["):
+            sect = s.strip("[]")
+        elif re.match(r"SigLevel\s*=", s) and re.search(r"\bNever\b|\bTrustAll\b", s):
+            bad.append(sect or "options")
+    return bad
+
+
+def _pacman_log_issues():
+    """(Zeitpunkt, [Fehler/Warnungen]) des letzten vollständigen Updates aus pacman.log."""
+    txt = _read("/var/log/pacman.log")
+    i = txt.rfind("starting full system upgrade")
+    if i < 0:
+        return None, []
+    seg = txt[i:]
+    m = re.match(r"\[([^\]]+)\]", txt[txt.rfind("\n", 0, i) + 1:i])
+    lines = [l for l in seg.splitlines() if re.search(r"\[ALPM(-SCRIPTLET)?\] (error|warning):|error:", l)]
+    return (m.group(1) if m else None), lines[-40:]
+
+
+def _history_hits():
+    """{Datei: Anzahl verdächtiger Zeilen} in Bash/Zsh/Fish-History."""
+    home = os.path.expanduser("~")
+    res = {}
+    for f in (".bash_history", ".zsh_history", ".histfile", ".local/share/fish/fish_history"):
+        p = os.path.join(home, f)
+        try:
+            with open(p, errors="ignore") as fh:
+                n = sum(1 for line in fh if SECRET_RE.search(line))
+        except OSError:
+            continue
+        if n:
+            res["~/" + f] = n
+    return res
+
+
+def _screen_lock():
+    """True/False, wenn die Bildschirmsperre bekannt ist (KDE, GNOME, Cinnamon, MATE), sonst None."""
+    for tool in ("kreadconfig6", "kreadconfig5"):
+        if which(tool):
+            v = _cmd_out([tool, "--file", "kscreenlockerrc", "--group", "Daemon", "--key", "Autolock"]).strip()
+            return v.lower() != "false"
+    for schema in ("org.gnome.desktop.screensaver", "org.cinnamon.desktop.screensaver", "org.mate.screensaver"):
+        if which("gsettings"):
+            v = _cmd_out(["gsettings", "get", schema, "lock-enabled"]).strip()
+            if v in ("true", "false"):
+                return v == "true"
+    return None
+
+
+def _vscode_telemetry():
+    """[(Editor, Einstellung)] für VS Code/VSCodium mit eingeschalteter Telemetrie."""
+    out = []
+    for name, d in (("VS Code", "Code"), ("Code – OSS", "Code - OSS"), ("VSCodium", "VSCodium")):
+        p = os.path.expanduser(f"~/.config/{d}/User/settings.json")
+        if not os.path.isdir(os.path.dirname(os.path.dirname(p))):
+            continue
+        txt = _read(p)
+        m = re.search(r'"telemetry\.telemetryLevel"\s*:\s*"(\w+)"', txt)
+        if name == "VSCodium" and not m:
+            continue                  # VSCodium hat Telemetrie ab Werk aus
+        if not m or m.group(1) != "off":
+            out.append((name, p))
+    return out
+
+
+def _stale_modules():
+    """Modul-Ordner alter Kernel in /usr/lib/modules, die keinem Paket mehr gehören."""
+    base = "/usr/lib/modules"
+    try:
+        dirs = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+    except Exception:
+        return []
+    run = os.uname().release
+    cand = [d for d in dirs if d != run and not d.startswith("extramodules")]
+    if not cand:
+        return []
+    r = subprocess.run(["pacman", "-Qqo"] + [os.path.join(base, d) for d in cand], capture_output=True,
+                       text=True, timeout=30, env={**os.environ, "LC_ALL": "C"}) if which("pacman") else None
+    if r is None:
+        return []
+    owned = set()
+    for line in (r.stderr or "").splitlines():
+        m = re.search(r"No package owns (\S+)", line)
+        if m:
+            owned.add(os.path.basename(m.group(1).rstrip("/")))
+    return sorted(owned)
+
+
+def _disks_io():
+    """[(Laufwerk, rotierend, aktueller Scheduler, verfügbare)]"""
+    out = []
+    try:
+        names = os.listdir("/sys/block")
+    except Exception:
+        return out
+    for n in sorted(names):
+        if not re.match(r"^(sd[a-z]+|nvme\d+n\d+|mmcblk\d+|vd[a-z]+)$", n):
+            continue
+        sch = _first_line(f"/sys/block/{n}/queue/scheduler")
+        m = re.search(r"\[([\w-]+)\]", sch)
+        out.append((n, _first_line(f"/sys/block/{n}/queue/rotational") == "1", m.group(1) if m else sch or "?",
+                    sch.replace("[", "").replace("]", "").split()))
+    return out
+
+
+def _unit_enabled(unit):
+    return _cmd_out(["systemctl", "is-enabled", unit]).strip() in ("enabled", "enabled-runtime", "static")
+
+
+def checklist_state():
+    """Alle Werte für die Checkliste – läuft im Hintergrund, ohne root."""
+    c = {}
+    # Pakete
+    c["sig"] = _pacman_siglevel()
+    ml = "/etc/pacman.d/mirrorlist"
+    c["mirror_age"] = (time.time() - os.path.getmtime(ml)) / 86400 if os.path.exists(ml) else None
+    c["reflector"] = which("reflector")
+    c["reflector_timer"] = _unit_enabled("reflector.timer") if c["reflector"] else False
+    c["paclog"] = _pacman_log_issues()
+    c["reboot"] = kernel_modules_missing()
+    c["kernel"] = os.uname().release
+    c["kernel_pkgs"] = [k for k in ("linux", "linux-lts", "linux-zen", "linux-hardened")
+                        if os.path.exists(f"/usr/lib/modules/{c['kernel']}/pkgbase")
+                        and _read(f"/usr/lib/modules/{c['kernel']}/pkgbase").strip() == k]
+    # Zugriff
+    r = subprocess.run(["sudo", "-n", "sh", "-c", "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null"],
+                       capture_output=True, text=True, timeout=5) if which("sudo") else None
+    if r is not None and r.returncode == 0:
+        c["nopasswd"] = [l.strip() for l in r.stdout.splitlines()
+                         if "NOPASSWD" in l and not l.strip().startswith("#")]
+    else:
+        c["nopasswd"] = None
+    c["groups"] = _cmd_out(["id", "-nG"]).split()
+    c["lock"] = _screen_lock()
+    c["apparmor"] = _first_line("/sys/module/apparmor/parameters/enabled") == "Y"
+    c["usbguard"] = svc_active("usbguard") if which("usbguard") else None
+    # Datenschutz
+    c["journal_max"] = _conf_value(["/etc/systemd/journald.conf", "/etc/systemd/journald.conf.d"],
+                                   "Journal", "SystemMaxUse")
+    m = re.search(r"take up ([\d.]+\s*\w+)", _cmd_out(["journalctl", "--disk-usage"]))
+    c["journal_use"] = m.group(1) if m else None
+    c["core_storage"] = _conf_value(["/etc/systemd/coredump.conf", "/etc/systemd/coredump.conf.d"],
+                                    "Coredump", "Storage")
+    c["core_pattern"] = _read("/proc/sys/kernel/core_pattern").strip()
+    try:
+        c["core_files"] = len(os.listdir("/var/lib/systemd/coredump"))
+    except Exception:
+        c["core_files"] = 0
+    c["history"] = _history_hits()
+    c["ignorespace"] = bool(re.search(r"HISTCONTROL=\S*ignore(space|both)",
+                                      _read(os.path.expanduser("~/.bashrc")) + _read(os.path.expanduser(
+                                          "~/.bash_profile"))))
+    c["telemetry"] = _vscode_telemetry()
+    # Kernel
+    c["aslr"] = _read("/proc/sys/kernel/randomize_va_space").strip()
+    # Backup
+    cfg = backup_load()
+    c["bk_targets"] = cfg.get("targets", [])
+    c["bk_last"] = (cfg.get("history") or [{}])[0].get("at")
+    c["bk_sources"] = cfg.get("sources", [])
+    c["bk_schedule"] = cfg.get("schedule", "off")
+    c["root_fs"] = _cmd_out(["findmnt", "-n", "-o", "FSTYPE", "/"]).strip()
+    c["snap_tool"] = next((t for t in ("snapper", "timeshift", "btrbk") if which(t)), None)
+    # Performance
+    c["swappiness"] = _read("/proc/sys/vm/swappiness").strip()
+    c["mem"] = meminfo().get("MemTotal", 0)
+    c["swaps"] = swap_devices()
+    c["fstrim"] = _unit_enabled("fstrim.timer")
+    c["disks"] = _disks_io()
+    c["governor"] = _first_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+    c["tmp_fs"] = _cmd_out(["findmnt", "-n", "-o", "FSTYPE", "/tmp"]).strip()
+    # Wartung
+    out = _cmd_out(["journalctl", "-p", "3", "-b", "-q", "--no-pager", "-o", "short-monotonic"], 15)
+    c["jerr"] = [l for l in out.splitlines() if l.strip()]
+    c["failed"] = [l.split()[0] for l in _cmd_out(["systemctl", "--failed", "--no-legend", "--plain"]).splitlines()
+                   if l.strip()]
+    c["ntp"] = _cmd_out(["timedatectl", "show", "-p", "NTPSynchronized", "--value"]).strip()
+    c["ntp_on"] = _cmd_out(["timedatectl", "show", "-p", "NTP", "--value"]).strip()
+    c["stale_mods"] = _stale_modules()
+    c["orphans"] = [l for l in _cmd_out(["pacman", "-Qdtq"]).split() if l]
+    try:
+        c["cache"] = sum(e.stat().st_size for e in os.scandir("/var/cache/pacman/pkg") if e.is_file())
+    except Exception:
+        c["cache"] = None
+    return c
+
+
+def show_text(parent, title, heading, text):
+    """Einfaches Fenster mit Text in Monospace (z. B. Fehlerliste)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(28, 24, 28, 20)
+    lay.setSpacing(12)
+    lay.addWidget(Label(heading, "DialogTitle"))
+    box = QPlainTextEdit(text)
+    box.setObjectName("Log")
+    box.setReadOnly(True)
+    box.setFont(QFont(FONTS["mono"], 9))
+    box.setMinimumSize(760, 360)
+    lay.addWidget(box)
+    row = QHBoxLayout()
+    row.addStretch(1)
+    ok = Button("Schließen", "primary", dlg.accept)
+    ok.setDefault(True)
+    row.addWidget(ok)
+    lay.addLayout(row)
+    dlg.exec()
 
 
 class CheckRow(QFrame):
@@ -8179,6 +8428,7 @@ class SecurityTab(Page):
             self.rows[key] = r
             ov.body.addWidget(r)
         self.lay.addWidget(ov)
+        self.lay.addWidget(self._build_checklist())
 
         # ---------- Offene Ports ----------
         self.ports_panel = Panel("Offene Ports", [Button("↻", "icon", self.refresh_ports, "Neu prüfen")])
@@ -8456,6 +8706,7 @@ class SecurityTab(Page):
         self.mv_refresh()
         self.fw_refresh()
         self.refresh_ports()
+        self.refresh_checklist()
 
     def _goto(self, widget):
         QTimer.singleShot(0, lambda: self.ensureWidgetVisible(widget, 0, 40))
@@ -8541,12 +8792,14 @@ class SecurityTab(Page):
         miss = r["sysctl"]
         if not miss:
             self.rows["kernel"].set("ok", "Aktiv", "Kernel-Austausch im laufenden Betrieb (kexec) und "
-                                                   "SysRq-Tastenkürzel sind gesperrt.")
+                                                   "SysRq-Tastenkürzel sind gesperrt, Kernel-Meldungen und "
+                                                   "-Adressen nur für root lesbar.")
         else:
             warn += 1
             self.rows["kernel"].set("warn", "Offen", "Nicht gesetzt: " + ", ".join(
                 f"{k}={HARDEN_SYSCTL[k]}" for k in miss) + ". Sperrt den Kernel-Austausch im laufenden Betrieb "
-                "(kexec) und SysRq-Tastenkürzel – im Alltag ohne Nachteile.", "Aktivieren", self.harden_kernel)
+                "(kexec) und SysRq-Tastenkürzel und verbirgt Kernel-Meldungen (dmesg) und -Adressen vor normalen "
+                "Programmen – im Alltag ohne Nachteile.", "Aktivieren", self.harden_kernel)
         # Updates
         last = r["last_upgrade"]
         imp = [u for u in r["pending"] if u.get("kind")]
@@ -8705,7 +8958,7 @@ class SecurityTab(Page):
 
     def harden_kernel(self):
         if not ask_confirm(self, "Kernel-Schutz", "Kernel-Austausch im laufenden Betrieb (kexec) und "
-                           "SysRq-Tastenkürzel sperren?\n\nWird in " + HARDEN_FILE + " gespeichert und gilt "
+                           "SysRq-Tastenkürzel sperren, Kernel-Meldungen (dmesg) und -Adressen nur für root?\n\nWird in " + HARDEN_FILE + " gespeichert und gilt "
                            "sofort und nach jedem Neustart.", "Aktivieren"):
             return
         body = "".join(f"{k} = {v}\n" for k, v in HARDEN_SYSCTL.items())
@@ -8823,6 +9076,356 @@ class SecurityTab(Page):
             self.refresh_all()
         run_streaming(cmd, self.log, needs_sudo=True, clear_first=False, on_done=done, interactive=interactive)
 
+
+    # ======================================================================
+    # Checkliste: Wartung, Datenschutz, Performance
+    # ======================================================================
+
+    CHECK_GROUPS = [
+        ("Pakete & Updates", [("sig", "Paketsignaturen"), ("mirror", "Spiegelserver (Mirrors)"),
+                              ("paclog", "Letztes Update (pacman.log)"), ("kern", "Kernel & Neustart")]),
+        ("Zugriff", [("sudo", "sudo ohne Passwort (NOPASSWD)"), ("groups", "Benutzergruppen"),
+                     ("lock", "Bildschirmsperre"), ("mac", "AppArmor"), ("usb", "USB-Schutz (usbguard)")]),
+        ("Datenschutz", [("journal", "System-Protokoll (journald)"), ("core", "Speicherabbilder (Core Dumps)"),
+                         ("hist", "Shell-Verlauf"), ("telem", "Telemetrie in Editoren")]),
+        ("Kernel", [("aslr", "Adress-Zufall (ASLR)")]),
+        ("Backup", [("backup", "Backup"), ("pkglist", "Paketliste"), ("snap", "System-Snapshots")]),
+        ("Performance", [("trim", "TRIM für SSDs"), ("io", "I/O-Scheduler"), ("swapcfg", "Swap & Swappiness"),
+                         ("gov", "CPU-Regler"), ("tmp", "/tmp im Arbeitsspeicher")]),
+        ("Laufende Wartung", [("jerr", "Fehler seit dem Start"), ("failed", "Fehlgeschlagene Dienste"),
+                              ("ntp", "Uhrzeit (NTP)"), ("mods", "Alte Kernel-Module"),
+                              ("clean", "Verwaiste Pakete & Paket-Cache")]),
+    ]
+
+    def _build_checklist(self):
+        self.cl_badge = StatusBadge("off", "Prüfe …")
+        p = Panel("Checkliste: Wartung, Datenschutz & Performance",
+                  [self.cl_badge, Button("↻", "icon", self.refresh_checklist, "Neu prüfen")])
+        p.body.addWidget(Label("Weitere Punkte für ein gepflegtes Arch-System. Grün passt, Gelb lohnt einen Blick, "
+                               "Grau ist optional oder nur ein Hinweis. Knöpfe ändern nur, was dabeisteht.",
+                               "Hint", wrap=True))
+        self.cl_rows = {}
+        for group, items in self.CHECK_GROUPS:
+            head = Label(group.upper(), "FieldLabel")
+            head.setContentsMargins(0, 8, 0, 0)
+            p.body.addWidget(head)
+            for key, title in items:
+                r = CheckRow(title)
+                r.set("off", "…", "")
+                self.cl_rows[key] = r
+                p.body.addWidget(r)
+        return p
+
+    def refresh_checklist(self):
+        self.cl_badge.set("off", "Prüfe …")
+
+        def worker():
+            try:
+                c = checklist_state()
+            except Exception as e:
+                c = {"_error": str(e)}
+            ui(lambda: self._show_checklist(c))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_checklist(self, c):
+        if "_error" in c:
+            self.cl_badge.set("danger", "Fehler")
+            self.cl_rows["sig"].set("danger", "Fehler", c["_error"])
+            return
+        R = self.cl_rows
+        goto = lambda key: (lambda: self.app.select([m[0] for m in MODULES].index(key)))
+        # --- Pakete & Updates
+        if c["sig"]:
+            R["sig"].set("danger", "Abgeschaltet", "In /etc/pacman.conf steht SigLevel = Never/TrustAll bei: "
+                         + ", ".join(c["sig"]) + ". Pakete werden dann nicht auf Echtheit geprüft – dort auf "
+                         "„Required DatabaseOptional“ zurückstellen.")
+        else:
+            R["sig"].set("ok", "Aktiv", "pacman prüft die Signatur jedes Pakets.")
+        age = c["mirror_age"]
+        if c["reflector_timer"]:
+            R["mirror"].set("ok", "Automatisch", "reflector.timer hält die Liste aktuell.")
+        elif age is None:
+            R["mirror"].set("off", "Unbekannt", "Keine /etc/pacman.d/mirrorlist gefunden.")
+        else:
+            act = ("Jetzt aktualisieren", self.cl_mirrors) if c["reflector"] else \
+                ("reflector installieren", lambda: self._root(["pacman", "-S", "--needed", "reflector"],
+                                                             interactive=True))
+            R["mirror"].set("ok" if age < 90 else "warn", f"{age:.0f} Tage alt",
+                            "Die Liste der Download-Server. Ältere Listen führen zu langsamen oder veralteten "
+                            "Servern." + ("" if c["reflector"] else " reflector sucht die schnellsten aktuellen."),
+                            *act)
+        when, issues = c["paclog"]
+        if when is None:
+            R["paclog"].set("off", "Kein Eintrag", "In pacman.log steht noch kein vollständiges Update.")
+        elif issues:
+            R["paclog"].set("warn", f"{len(issues)} Meldungen", f"Beim Update am {when[:16].replace('T', ' ')} gab "
+                            "es Fehler oder Warnungen (z. B. .pacnew-Dateien, fehlgeschlagene Hooks).", "Anzeigen",
+                            lambda: show_text(self, "pacman.log", "Meldungen beim letzten Update",
+                                              "\n".join(issues)))
+        else:
+            R["paclog"].set("ok", "Sauber", f"Letztes Update am {when[:16].replace('T', ' ')} ohne Fehler.")
+        kv = c["kernel"] + (f" ({c['kernel_pkgs'][0]})" if c["kernel_pkgs"] else "")
+        if c["reboot"]:
+            R["kern"].set("warn", "Neustart nötig", f"Läuft: {kv}. Der Kernel wurde aktualisiert – bis zum "
+                          "Neustart fehlen Module (z. B. für USB-Sticks) und der neue Kernel ist nicht aktiv.")
+        else:
+            R["kern"].set("ok", "Aktuell", f"Läuft: {kv}."
+                          + ("" if "hardened" in kv else " Für erhöhten Schutzbedarf gibt es linux-hardened "
+                             "(manche Programme laufen damit eingeschränkt)."))
+        # --- Zugriff
+        if c["nopasswd"] is None:
+            R["sudo"].set("off", "Nicht geprüft", "Die sudo-Regeln sind nur mit Administrator-Rechten lesbar.",
+                          "Prüfen", lambda: self.app.priv.ensure(self) and self.refresh_checklist())
+        elif c["nopasswd"]:
+            R["sudo"].set("warn", f"{len(c['nopasswd'])} Regel(n)", "Ohne Passwort erlaubt: "
+                          + " · ".join(c["nopasswd"][:3]) + ". Jedes Programm unter deinem Benutzer kann diese "
+                          "Befehle als root ausführen – nur behalten, wenn nötig (visudo).")
+        else:
+            R["sudo"].set("ok", "Keine", "sudo fragt immer nach dem Passwort.")
+        risky = [g for g in c["groups"] if g in ("docker", "disk", "libvirt", "lxd", "root")]
+        R["groups"].set("warn" if risky else "ok", ", ".join(risky) if risky else "Unauffällig",
+                        ("Mitglied in: " + ", ".join(c["groups"]) + ". ")
+                        + ("Diese Gruppen geben praktisch root-Rechte ohne Passwort – nur behalten, wenn du sie "
+                           "brauchst (gpasswd -d BENUTZER GRUPPE)." if risky else ""))
+        if c["lock"] is None:
+            R["lock"].set("off", "Unbekannt", "Für diese Desktop-Umgebung kann Tuxdex die Sperre nicht auslesen – "
+                          "bitte in den Systemeinstellungen prüfen.")
+        else:
+            R["lock"].set("ok" if c["lock"] else "warn", "An" if c["lock"] else "Aus",
+                          "Der Bildschirm sperrt sich bei Inaktivität." if c["lock"] else
+                          "Der Bildschirm sperrt sich nicht automatisch – in den Systemeinstellungen einschalten.")
+        R["mac"].set("ok" if c["apparmor"] else "off", "Aktiv" if c["apparmor"] else "Optional",
+                     "AppArmor schränkt ein, worauf einzelne Programme zugreifen dürfen." if c["apparmor"] else
+                     "AppArmor ist nicht aktiv. Sinnvoll für Server oder erhöhten Schutzbedarf; braucht einen "
+                     "Kernel-Parameter (lsm=…,apparmor) und das Paket apparmor.")
+        if c["usbguard"] is None:
+            R["usb"].set("off", "Optional", "usbguard blockiert unbekannte USB-Geräte (Schutz gegen manipulierte "
+                         "Sticks). Nur bei physischem Zugriff Fremder sinnvoll.")
+        else:
+            R["usb"].set("ok" if c["usbguard"] else "warn", "Aktiv" if c["usbguard"] else "Installiert, aus",
+                         "usbguard läuft." if c["usbguard"] else "usbguard ist installiert, der Dienst läuft nicht.")
+        # --- Datenschutz
+        use = c["journal_use"] or "?"
+        if c["journal_max"]:
+            R["journal"].set("ok", "Begrenzt", f"Höchstens {c['journal_max']} (belegt: {use}).")
+        else:
+            R["journal"].set("info", "Unbegrenzt", f"Belegt: {use}. Ohne Grenze darf das Protokoll bis zu 10 % der "
+                             "Partition nutzen und hält Einträge sehr lange.", "Auf 500 MB / 1 Monat",
+                             self.cl_journald)
+        if (c["core_storage"] or "").lower() == "none" or not c["core_pattern"] or "false" in c["core_pattern"]:
+            R["core"].set("ok", "Aus", "Abgestürzte Programme hinterlassen keine Speicherabbilder.")
+        else:
+            R["core"].set("info", f"{c['core_files']} Dumps" if c["core_files"] else "An",
+                          "Bei Abstürzen landet der Arbeitsspeicher des Programms auf der Platte – darin können "
+                          "Passwörter stehen.", "Abschalten", self.cl_coredump)
+        hits = c["history"]
+        if hits:
+            R["hist"].set("warn", f"{sum(hits.values())} Treffer",
+                          "Zeilen, die nach Passwort oder Token aussehen, in: " + ", ".join(
+                              f"{f} ({n})" for f, n in hits.items()) + ". Tuxdex zeigt sie nicht an – bitte selbst "
+                          "prüfen und löschen." + ("" if c["ignorespace"] else " Tipp: HISTCONTROL=ignorespace in "
+                                                   "~/.bashrc – Befehle mit Leerzeichen davor landen nicht im Verlauf."))
+        else:
+            R["hist"].set("ok", "Unauffällig", "Kein Passwort oder Token im Shell-Verlauf gefunden."
+                          + ("" if c["ignorespace"] else " Tipp: HISTCONTROL=ignorespace in ~/.bashrc – Befehle mit "
+                             "Leerzeichen davor landen nicht im Verlauf."))
+        tel = c["telemetry"]
+        if tel:
+            R["telem"].set("warn", "An", "Telemetrie aktiv in: " + ", ".join(n for n, _ in tel) + ".",
+                           "Abschalten", lambda: self.cl_telemetry(tel))
+        else:
+            R["telem"].set("ok", "Aus", "VS Code / VSCodium senden keine Telemetrie (oder sind nicht installiert). "
+                           "Browser-Telemetrie bitte in dessen Einstellungen prüfen.")
+        # --- Kernel
+        R["aslr"].set("ok" if c["aslr"] == "2" else "danger", "Voll" if c["aslr"] == "2" else f"Wert {c['aslr']}",
+                      "Speicheradressen werden zufällig vergeben – erschwert Angriffe." if c["aslr"] == "2" else
+                      "kernel.randomize_va_space sollte 2 sein (Standard). Jemand hat es abgeschaltet.")
+        # --- Backup
+        if not c["bk_targets"]:
+            R["backup"].set("warn", "Kein Ziel", "Noch kein Backup-Ziel festgelegt.", "Zum Backup",
+                            goto("backup"))
+        else:
+            days = (time.time() - c["bk_last"]) / 86400 if c["bk_last"] else None
+            src = " ".join(c["bk_sources"])
+            miss = [n for n, p in (("/etc", "/etc"), ("Home", os.path.expanduser("~"))) if p not in src]
+            detail = ("Letztes Backup " + (fmt_ago(c["bk_last"]) if c["bk_last"] else "noch nie") + ". "
+                      + ("Zeitplan: " + {"off": "aus", "daily": "täglich", "weekly": "wöchentlich"}.get(
+                          c["bk_schedule"], c["bk_schedule"]) + ". ")
+                      + (f"Nicht gesichert: {', '.join(miss)}. " if miss else "")
+                      + "Wiederherstellen einmal ausprobieren, bevor es ernst wird.")
+            R["backup"].set("ok" if days is not None and days < 8 and not miss else "warn",
+                            f"vor {days:.0f} Tagen" if days is not None else "Noch nie", detail, "Zum Backup",
+                            goto("backup"))
+        pl = PKGLIST_FILE
+        if os.path.exists(pl):
+            R["pkglist"].set("ok", "Gespeichert", f"{short_path(pl)} vom "
+                             f"{datetime.fromtimestamp(os.path.getmtime(pl)).strftime('%d.%m.%Y')} – wird bei jedem "
+                             "Backup erneuert. Neu installieren: pacman -S --needed - < pakete.txt",
+                             "Jetzt speichern", self.cl_pkglist)
+        else:
+            R["pkglist"].set("warn", "Fehlt", "Die Liste aller selbst installierten Pakete macht eine Neuinstallation "
+                             "leicht. Tuxdex legt sie in ~/.config/tuxdex ab und erneuert sie bei jedem Backup.",
+                             "Jetzt speichern", self.cl_pkglist)
+        if c["root_fs"] == "btrfs":
+            R["snap"].set("ok" if c["snap_tool"] else "info", c["snap_tool"] or "Kein Werkzeug",
+                          "Btrfs-Snapshots vor Updates " + ("sind eingerichtet." if c["snap_tool"] else
+                                                            "machen ein Zurück in Sekunden möglich – z. B. mit "
+                                                            "snapper + snap-pac oder timeshift."))
+        else:
+            R["snap"].set("off", "Nicht möglich", f"System-Snapshots brauchen Btrfs (hier: {c['root_fs'] or '?'}). "
+                          "Die Tuxdex-Backups decken das über Snapshots auf einem Ziel ab.")
+        # --- Performance
+        ssd = [d for d in c["disks"] if not d[1]]
+        if not ssd:
+            R["trim"].set("off", "Keine SSD", "Kein SSD/NVMe-Laufwerk gefunden.")
+        else:
+            R["trim"].set("ok" if c["fstrim"] else "warn", "Wöchentlich" if c["fstrim"] else "Aus",
+                          "fstrim.timer gibt freie Blöcke einmal pro Woche an die SSD zurück." if c["fstrim"] else
+                          "Ohne TRIM werden SSDs mit der Zeit langsamer.", None if c["fstrim"] else "Einschalten",
+                          None if c["fstrim"] else lambda: self._root(["systemctl", "enable", "--now",
+                                                                       "fstrim.timer"]))
+        bad = [(n, cur) for n, rot, cur, av in c["disks"]
+               if (not rot and cur not in ("none", "mq-deadline", "kyber")) or (rot and cur not in ("bfq",
+                                                                                                    "mq-deadline"))]
+        if not c["disks"]:
+            R["io"].set("off", "—", "Keine Laufwerke gefunden.")
+        elif bad:
+            R["io"].set("info", "Anpassen", "Ungewöhnlich: " + ", ".join(f"{n}: {s}" for n, s in bad)
+                        + ". Empfohlen: none für NVMe, mq-deadline für SSD, bfq für Festplatten.", "Empfohlen setzen",
+                        self.cl_iosched)
+        else:
+            R["io"].set("ok", "Passend", " · ".join(f"{n}: {cur}" for n, _, cur, _ in c["disks"]))
+        ram_gb = c["mem"] / 1024 ** 3
+        sw = c["swappiness"]
+        if not c["swaps"]:
+            R["swapcfg"].set("warn", "Kein Swap", "Ohne Swap/zram beendet Linux bei vollem Speicher Programme.",
+                             "Zum Swap", goto("swap"))
+        elif sw.isdigit() and ram_gb >= 12 and int(sw) >= 60 and not any("zram" in d[0] for d in c["swaps"]):
+            R["swapcfg"].set("info", f"Swappiness {sw}", f"{ram_gb:.0f} GB RAM – mit 10–20 bleibt mehr im schnellen "
+                             "Arbeitsspeicher.", "Zum Swap", goto("swap"))
+        else:
+            R["swapcfg"].set("ok", f"Swappiness {sw}", ", ".join(short_path(d[0]) for d in c["swaps"])
+                             + (" – bei zram ist ein hoher Wert richtig." if any("zram" in d[0] for d in c["swaps"])
+                                else ""))
+        g = c["governor"]
+        R["gov"].set("ok" if g else "off", g or "—",
+                     {"powersave": "Stromsparend – bei amd-pstate/intel_pstate trotzdem voll schnell, der Energiemodus "
+                                   "entscheidet.", "performance": "Immer höchster Takt – schnell, aber mehr Strom und "
+                                   "Wärme.", "schedutil": "Passt den Takt der Last an – guter Standard."}.get(
+                         g, "Der Taktregler der CPU. Details: Taskmanager → Leistung → Prozessor."))
+        R["tmp"].set("ok" if c["tmp_fs"] == "tmpfs" else "info", "tmpfs" if c["tmp_fs"] == "tmpfs" else
+                     (c["tmp_fs"] or "Platte"), "/tmp liegt im Arbeitsspeicher – schnell und nach Neustart leer."
+                     if c["tmp_fs"] == "tmpfs" else "/tmp liegt auf der Platte. Arch nutzt normalerweise tmpfs "
+                     "(tmp.mount) – prüfen, ob /etc/fstab das überschreibt.")
+        # --- Laufende Wartung
+        je = c["jerr"]
+        R["jerr"].set("ok" if not je else "info", "Keine" if not je else f"{len(je)} Meldungen",
+                      "Seit dem Start keine Fehler im System-Protokoll." if not je else
+                      "Fehler im System-Protokoll seit dem Start (journalctl -p 3 -b). Viele sind harmlos (z. B. "
+                      "Firmware-Hinweise) – wiederkehrende lohnen einen Blick.", "Anzeigen" if je else None,
+                      (lambda: show_text(self, "Fehler seit dem Start", "journalctl -p 3 -b", "\n".join(je[-300:])))
+                      if je else None)
+        f = c["failed"]
+        R["failed"].set("ok" if not f else "warn", "Keine" if not f else f"{len(f)} Dienst(e)",
+                        "Alle Dienste laufen." if not f else "Fehlgeschlagen: " + ", ".join(f[:6])
+                        + ". Details: systemctl status NAME.", "Zurücksetzen" if f else None,
+                        (lambda: self._root(["systemctl", "reset-failed"])) if f else None)
+        if not c["ntp"]:
+            R["ntp"].set("off", "Unbekannt", "timedatectl meldet keinen Zeitabgleich (kein systemd-timesyncd?).")
+        elif c["ntp"] == "yes":
+            R["ntp"].set("ok", "Synchron", "Die Uhrzeit wird über das Netz abgeglichen.")
+        else:
+            R["ntp"].set("warn", "Nicht synchron", "Falsche Uhrzeit stört Zertifikate, Updates und Logs."
+                         + (" NTP ist aus." if c["ntp_on"] != "yes" else ""), "NTP einschalten",
+                         lambda: self._root(["timedatectl", "set-ntp", "true"]))
+        mods = c["stale_mods"]
+        R["mods"].set("ok" if not mods else "info", "Keine" if not mods else f"{len(mods)} Ordner",
+                      "Keine Reste alter Kernel." if not mods else "Übrig von entfernten Kernels: "
+                      + ", ".join(mods) + " (in /usr/lib/modules).", "Entfernen" if mods else None,
+                      (lambda: self.cl_stale_mods(mods)) if mods else None)
+        orph, cache = c["orphans"], c["cache"]
+        big = cache and cache > 3 * 1024 ** 3
+        R["clean"].set("info" if (orph or big) else "ok", f"{len(orph)} verwaist" if orph else "Sauber",
+                       (f"{len(orph)} Pakete, die nichts mehr braucht. " if orph else "")
+                       + (f"Paket-Cache: {fmt_bytes(cache)}." if cache is not None else ""),
+                       "Zum Aufräumen" if (orph or big) else None, goto("storage") if (orph or big) else None)
+        n_warn = sum(1 for r in R.values() if r.badge.property("tone") in ("warn", "danger"))
+        self.cl_badge.set("ok" if not n_warn else "warn", "Alles gut" if not n_warn else f"{n_warn} Hinweise")
+
+    # ---- Aktionen der Checkliste ----------------------------------------
+
+    def cl_mirrors(self):
+        if ask_confirm(self, "Spiegelserver", "Die 20 schnellsten aktuellen HTTPS-Server suchen und als "
+                       "/etc/pacman.d/mirrorlist speichern? Die alte Liste bleibt als mirrorlist.bak.", "Aktualisieren"):
+            self._root(["sh", "-c", "cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.bak; reflector --latest 20 "
+                        "--protocol https --sort rate --save /etc/pacman.d/mirrorlist"])
+
+    def cl_journald(self):
+        if not ask_confirm(self, "System-Protokoll begrenzen", "Das System-Protokoll auf 500 MB und einen Monat "
+                           f"begrenzen?\n\nWird in {JOURNALD_FILE} gespeichert. Ältere Einträge werden gelöscht.",
+                           "Begrenzen"):
+            return
+        body = "# Tuxdex\n[Journal]\nSystemMaxUse=500M\nMaxRetentionSec=1month\n"
+        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(JOURNALD_FILE)} && printf %s {shlex.quote(body)} > "
+                    f"{JOURNALD_FILE} && systemctl restart systemd-journald && journalctl --vacuum-size=500M "
+                    "--vacuum-time=1month"])
+
+    def cl_coredump(self):
+        if not ask_confirm(self, "Speicherabbilder abschalten", "Bei Abstürzen keine Speicherabbilder mehr speichern "
+                           "und vorhandene löschen?\n\nEntwickler brauchen sie manchmal zur Fehlersuche. Wird in "
+                           f"{COREDUMP_FILE} gespeichert.", "Abschalten"):
+            return
+        body = "# Tuxdex\n[Coredump]\nStorage=none\nProcessSizeMax=0\n"
+        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(COREDUMP_FILE)} && printf %s {shlex.quote(body)} > "
+                    f"{COREDUMP_FILE} && rm -f /var/lib/systemd/coredump/* && systemctl daemon-reload"])
+
+    def cl_telemetry(self, items):
+        names = ", ".join(n for n, _ in items)
+        if not ask_confirm(self, "Telemetrie abschalten", f"In {names} „telemetry.telemetryLevel“ auf „off“ setzen?",
+                           "Abschalten"):
+            return
+        for _, path in items:
+            txt = _read(path).strip()
+            try:
+                data = json.loads(txt) if txt else {}
+            except ValueError:
+                show_warning(self, "Telemetrie", f"{short_path(path)} enthält Kommentare oder ist ungültig – bitte "
+                             "im Editor unter Einstellungen → Telemetry selbst auf „off“ stellen.")
+                continue
+            data["telemetry.telemetryLevel"] = "off"
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+            except OSError as e:
+                show_error(self, "Telemetrie", str(e))
+        self.refresh_checklist()
+
+    def cl_iosched(self):
+        rules = ('# Tuxdex: I/O-Scheduler je Laufwerkstyp\n'
+                 'ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}="none"\n'
+                 'ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", '
+                 'ATTR{queue/scheduler}="mq-deadline"\n'
+                 'ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"\n')
+        if not ask_confirm(self, "I/O-Scheduler", "Empfohlene Scheduler setzen (NVMe: none, SSD: mq-deadline, "
+                           f"Festplatte: bfq)?\n\nWird als udev-Regel in {IOSCHED_FILE} gespeichert.", "Setzen"):
+            return
+        self._root(["sh", "-c", f"printf %s {shlex.quote(rules)} > {IOSCHED_FILE} && modprobe -q bfq; "
+                    "udevadm control --reload && udevadm trigger --subsystem-match=block --action=change"])
+
+    def cl_stale_mods(self, mods):
+        if not ask_confirm(self, "Alte Kernel-Module", "Diese Ordner gehören zu keinem installierten Kernel mehr und "
+                           "werden gelöscht:\n\n" + "\n".join(f"/usr/lib/modules/{m}" for m in mods), "Entfernen",
+                           danger=True):
+            return
+        self._root(["rm", "-rf", "--"] + [f"/usr/lib/modules/{m}" for m in mods
+                                          if re.match(r"^[\w.+-]+$", m) and m != os.uname().release])
+
+    def cl_pkglist(self):
+        ok = save_pkglist()
+        self.app.set_status(f"Paketliste gespeichert: {short_path(PKGLIST_FILE)}" if ok else
+                            "Paketliste konnte nicht gespeichert werden.")
+        self.refresh_checklist()
 
     # ======================================================================
     # Offene Ports – je Port ein Knopf „Sperren“ / „Freigeben“
@@ -9399,6 +10002,24 @@ COMPRESSORS = {
 ARCHIVE_RE = re.compile(r"^(?P<base>.+?(?P<ext>\.tar(?:\.zst|\.xz|\.gz)?)(?P<gpg>\.gpg)?)(?:\.part(?P<part>\d{3}))?$")
 
 
+PKGLIST_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "pakete.txt")
+
+
+def save_pkglist():
+    """Selbst installierte Pakete (pakete.txt) und solche aus dem AUR (pakete-aur.txt) in ~/.config/tuxdex."""
+    if not which("pacman"):
+        return False
+    try:
+        os.makedirs(os.path.dirname(PKGLIST_FILE), exist_ok=True)
+        for args, path in ((["-Qqen"], PKGLIST_FILE), (["-Qqem"], PKGLIST_FILE.replace(".txt", "-aur.txt"))):
+            out = subprocess.run(["pacman"] + args, capture_output=True, text=True, timeout=30).stdout
+            with open(path, "w") as f:
+                f.write(out)
+        return True
+    except Exception:
+        return False
+
+
 def backup_load():
     cfg = dict(BACKUP_DEFAULTS)
     cfg.update(_load_json(BACKUP_FILE, {}))
@@ -9580,6 +10201,7 @@ class BackupJob:
     def _run(self):
         t0 = time.time()
         cfg = self.cfg
+        save_pkglist()           # Paketliste landet mit ~/.config im Backup
         self.sources = [s for s in (_expand(x) for x in cfg["sources"]) if os.path.exists(s)]
         self.excludes = [_expand(e) for e in cfg["excludes"] if e.strip()]
         # Ziele, die in einer Quelle liegen, nicht mitsichern (sonst sichert sich das Backup selbst)

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.0-beta.10
+- Sicherheit: neue **Checkliste für Wartung, Datenschutz & Performance** – prüft automatisch und bietet, wo sinnvoll, einen Knopf zum Beheben:
+  - **Pakete & Updates**: Paketsignaturen (SigLevel), Alter der Mirrorliste (reflector), Fehler/Warnungen beim letzten Update in pacman.log, Neustart nach Kernel-Update.
+  - **Zugriff**: sudo-Regeln mit NOPASSWD, riskante Gruppen (docker, disk …), Bildschirmsperre (KDE/GNOME), AppArmor, usbguard.
+  - **Datenschutz**: Größe des System-Protokolls (auf 500 MB / 1 Monat begrenzen), Core Dumps abschalten, Passwörter/Tokens im Shell-Verlauf (nur gezählt), Telemetrie in VS Code.
+  - **Kernel**: ASLR; der Kernel-Schutz setzt jetzt auch `dmesg_restrict` und `kptr_restrict`.
+  - **Backup**: Alter des letzten Backups, ob /etc und Home gesichert werden, Paketliste, Btrfs-Snapshots.
+  - **Performance**: TRIM-Timer, I/O-Scheduler je Laufwerkstyp, Swap/Swappiness, CPU-Regler, /tmp als tmpfs.
+  - **Laufende Wartung**: Fehler im System-Protokoll seit dem Start, fehlgeschlagene Dienste, NTP, Reste alter Kernel-Module, verwaiste Pakete und Paket-Cache.
+- Backup: speichert vor jedem Lauf die **Paketliste** (`~/.config/tuxdex/pakete.txt`, AUR getrennt) – Neuinstallation mit `pacman -S --needed - < pakete.txt`.
+
 ## 1.6.0-beta.9
 - Backup: **Eigener Name für Sicherungen** mit Datum – z. B. `Laptop_yyyy-mm-dd` → `Laptop_2026-09-27`. Platzhalter `yyyy mm dd HH MM SS`, Text davor oder danach frei wählbar; Vorschau direkt unter dem Feld. Gilt für Snapshots und Archive, auch für geplante Backups. Doppelte Namen bekommen `_2`, `_3` …
 - Sortieren und Aufräumen alter Versionen nach dem echten Sicherungszeitpunkt, auch bei frei gewählten Namen.
