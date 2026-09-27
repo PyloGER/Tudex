@@ -50,6 +50,10 @@ NOT_UI = ("<svg", "<rect", "<path", "<circle", "QWidget {", "\\x1b", "[Desktop E
 
 def is_ui(t):
     s = t.strip()
+    words = re.findall(r"[A-Za-zÄÖÜäöüß]{3,}", s)
+    if len(words) >= 5 and re.search(r"[äöüß]| (und|der|die|das|nicht|mit|für|wird|nur|oder) ", s) \
+            and not any(x in s for x in ("<svg", "QWidget {", "[Desktop Entry]")):
+        return True        # ein deutscher Satz – auch wenn Befehle wie --user darin vorkommen
     if len(s) < 2 or not UI_RE.search(s) or CODE_RE.search(s):
         return False
     if any(x in s for x in NOT_UI) or re.fullmatch(r"[\w/ .-]+/[\w.-]+", s):

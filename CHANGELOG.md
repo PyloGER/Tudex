@@ -1,23 +1,28 @@
 # Changelog
 
-## 1.1.0-beta.3
-- **Englisch**: Tuxdex gibt es jetzt auch auf Englisch. Standard ist die Systemsprache; umstellen unter Einstellungen → Sprache · Language (wirkt nach einem Neustart). Alle Oberflächentexte, Rückfragen, Hinweise und Tabellenköpfe sind übersetzt; Befehlsausgaben bleiben, wie sie sind.
-- Englisches README (`README.en.md`), Umschalter oben in beiden READMEs.
-- Formatieren und Mullvad hängen nicht mehr vom angezeigten Text ab (wäre bei Englisch sonst kaputtgegangen).
-- Für Mitwirkende: `tools/i18n_extract.py` zeigt, welche Texte noch keine Übersetzung haben.
+## 1.1.0
+Sicherheit, Englisch und ein eigenes pacman-Repository.
 
-## 1.1.0-beta.2
-- **Eigenes pacman-Repository**: Jedes Release enthält jetzt das fertige Paket und eine Repo-Datenbank. Mit `[tuxdex]` in `/etc/pacman.conf` installiert und aktualisiert sich Tuxdex über `pacman -Syu` – ohne AUR (Anleitung im README).
-- **Alpha-Hinweis**: Vor der ersten Aktion mit root-Rechten erscheint einmal ein Hinweis („Alpha-Phase, Nutzung auf eigenes Risiko“). Erst nach Haken und „Akzeptieren“ führt Tuxdex root-Befehle aus – ohne Zustimmung wird jede root-Aktion abgebrochen, auch intern. Dazu ein dauerhaftes „ALPHA“-Abzeichen in der Kopfleiste und ein Hinweis im Passwort-Fenster.
+**Sicherheit**
+- **Alpha-Hinweis**: Vor der ersten Aktion mit root-Rechten erscheint einmal ein Hinweis („Alpha-Phase, Nutzung auf eigenes Risiko“). Erst nach Haken und „Akzeptieren“ führt Tuxdex root-Befehle aus – ohne Zustimmung wird jede root-Aktion abgebrochen, auch intern. Dazu ein „ALPHA“-Abzeichen in der Kopfleiste und ein Hinweis im Passwort-Fenster.
+- **Sicherheits-Review aller root-Aktionen:**
+  - Swapfile anlegen überschreibt keine vorhandenen Dateien mehr (vorher hätte ein Tippfehler im Pfad eine beliebige Datei als root mit Nullen überschrieben). Gesperrt sind Systemordner (/etc, /usr, /boot …), Verknüpfungen und Pfade mit „..“; eine vorhandene Datei muss nachweislich ein Swapfile sein. Auf btrfs wird das Swapfile korrekt mit `btrfs filesystem mkswapfile` angelegt.
+  - Swap entfernen löscht nur noch die fstab-Zeile, deren erstes Feld genau der Pfad ist (vorher jede Zeile, die den Text enthielt), und legt vorher `/etc/fstab.tuxdex.bak` an.
+  - Formatieren: Die letzte Prüfung vor `mkfs` erkennt jetzt auch eingehängte Partitionen, geöffnete LUKS-Container, LVM und aktiven Swap unterhalb des gewählten Geräts.
+  - Quarantäne: Wiederhergestellte Systemdateien bekommen ihren ursprünglichen Besitzer und ihre Rechte zurück (nie mit setuid-Bits); das Ziel darf nicht existieren.
+  - Hilfsdateien liegen nicht mehr in einem vorhersagbaren Ordner in /tmp, sondern in /run/user/<uid> bzw. ~/.cache.
+  - Datenträger-Bezeichnungen dürfen nicht mit „-“ beginnen (wäre sonst als Befehlsoption gelesen worden).
+- Sicherheitslücken bitte per Mail melden – siehe `SECURITY.md`.
 
-## 1.1.0-beta.1
-Sicherheits-Review aller root-Aktionen:
-- **Swap**: Swapfile anlegen überschreibt keine vorhandenen Dateien mehr (vorher hätte ein Tippfehler im Pfad z. B. eine beliebige Datei als root mit Nullen überschrieben). Gesperrt sind Systemordner (/etc, /usr, /boot …), Verknüpfungen und Pfade mit „..“; eine vorhandene Datei muss nachweislich ein Swapfile sein. Auf btrfs wird das Swapfile jetzt korrekt mit `btrfs filesystem mkswapfile` angelegt.
-- **Swap entfernen**: Die fstab-Zeile wird nur noch entfernt, wenn ihr erstes Feld genau der Pfad ist (vorher jede Zeile, die den Text enthielt); vorher wird `/etc/fstab.tuxdex.bak` angelegt.
-- **Formatieren**: Die letzte Prüfung vor `mkfs` erkennt jetzt auch eingehängte Partitionen, geöffnete LUKS-Container, LVM und aktiven Swap unterhalb des gewählten Geräts.
-- **Quarantäne**: Wiederhergestellte Systemdateien bekommen ihren ursprünglichen Besitzer und ihre Rechte zurück (vorher gehörten sie danach dem Benutzer und waren nur lesbar); nie mit setuid-Bits, Ziel darf nicht existieren.
-- **Icons**: Hilfsdateien liegen nicht mehr in einem vorhersagbaren Ordner in /tmp, sondern in /run/user/<uid> bzw. ~/.cache – kein Angriff über präparierte Verknüpfungen anderer Benutzer.
-- **Datenträger umbenennen**: Bezeichnungen dürfen nicht mit „-“ beginnen (wäre sonst als Befehlsoption gelesen worden).
+**Englisch**
+- Tuxdex gibt es jetzt auch auf Englisch. Standard ist die Systemsprache; umstellen unter Einstellungen → Sprache · Language (wirkt nach einem Neustart). Befehlsausgaben bleiben, wie sie sind.
+- Englisches README (`README.en.md`) mit Umschalter oben in beiden READMEs.
+
+**Installation & Projekt**
+- **Eigenes pacman-Repository**: Jedes Release enthält das fertige Paket und eine Repo-Datenbank. Mit `[tuxdex]` in `/etc/pacman.conf` installiert und aktualisiert sich Tuxdex über `pacman -Syu` – ohne AUR (Anleitung im README).
+- Issue-Vorlagen für Fehlerberichte und Ideen (deutsch/englisch).
+- Neue Screenshots (deutsch und englisch), erzeugt mit Beispieldaten über `tools/screenshots.py`.
+- Der Updater zeigt beim Aktualisieren nur echte neue Versionen, keine Vorabversionen aus dem Changelog.
 
 ## 1.0.0
 Erstes offizielles Release. Die Versionszählung beginnt neu – die Einträge darunter sind die Vorabversionen bis 1.6.0-beta.12.

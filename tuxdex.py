@@ -137,6 +137,7 @@ _TR_SUB = None       # Regex über alle festen Texte (für zusammengesetzte Sät
 _TR_UP = None        # Katalog in GROSSBUCHSTABEN (Feldüberschriften, Tabellenköpfe)
 _WORD = "A-Za-zÄÖÜäöüß0-9_"
 _SUFFIXES = {"e", "en", "n", "er", "r", "s", "es"}
+_DE_WORD = re.compile(r"[äöüß]|\b(und|der|die|das|nicht|mit|für|oder|von|seit|ist|sind|noch|vor|zum|beim|den|dem)\b")
 
 
 def _tr_build():
@@ -146,9 +147,10 @@ def _tr_build():
     for de, en in EN.items():
         if "{}" in de:
             parts = de.split("{}")
-            rx = "".join(re.escape(p) + ("(.*?)" if i < len(parts) - 1 else "") for i, p in enumerate(parts))
             suffix = [bool(re.search(f"[{_WORD}]$", parts[i])) and not re.match(f"[{_WORD}]", parts[i + 1] or " ")
                       for i in range(len(parts) - 1)]
+            rx = "".join(re.escape(p) + (("([a-zäöüß]{0,3})" if suffix[i] else "(.*?)") if i < len(parts) - 1 else "")
+                         for i, p in enumerate(parts))
             letters = len(re.sub("[^A-Za-zÄÖÜäöüß]", "", "".join(parts)))
             pats.append((re.compile(rx, re.S), en, suffix, sum(len(p) for p in parts), letters))
         elif " " in de.strip() or not re.match(f"[{_WORD}]", de):
@@ -181,18 +183,45 @@ def _tr(s, depth=0, loose=True):
     lead, trail = s[:len(s) - len(s.lstrip())], s[len(s.rstrip()):]
     pre = ""
     m = re.match(r"^([●▲✕○•⬆↓↑⚠\s]+)(\S.*)$", core, re.S)
-    if m and m.group(1).strip():
+    if m and m.group(1).strip() and core not in EN and not _tr_pattern(core, depth, loose):
         pre, core = m.group(1), m.group(2)
     en = EN.get(core)
+    if en is None and core[-1:] in ".:" and core[:-1] in EN:
+        en = EN[core[:-1]] + core[-1]
     if en is None and core.isupper():
         en = _TR_UP.get(core)
-    if en is None and depth < 3:
+    if en is None and depth < 4:
+        en = _tr_pattern(core, depth, loose)
+    if en is None and depth < 4:
+        # zusammengesetzte Zeilen stufenweise zerlegen: Zeilen/Absätze → Sätze → „ · “ → „: “
+        for sep in (r"(<br>|\n+)", r"((?<=[.!?])\s+(?=[A-ZÄÖÜ„(]))", r"(\s{2,}·\s{2,}|\s+·\s+|\s{2,})", r"(:\s+)"):
+            pieces = re.split(sep, core)
+            if len(pieces) > 1:
+                out = [p if i % 2 else _tr(p, depth + 1, loose=False) for i, p in enumerate(pieces)]
+                if out != pieces:
+                    en = "".join(out)
+                break
+    if en is None:
+        en = core
+    if loose and _TR_SUB and depth == 0:
+        en = _TR_SUB.sub(lambda x: EN[x.group(0)], en)
+    return lead + pre + en + trail
+
+
+def _tr_pattern(core, depth, loose):
+    """Erste passende Vorlage mit Platzhaltern – eingesetzte Werte werden ebenfalls übersetzt."""
+    if _TR_PATS is None:
+        _tr_build()
+    if depth < 3:
         for rx, tmpl, suf, _, letters in _TR_PATS:
             mm = rx.fullmatch(core)
             if not mm:
                 continue
-            if letters < 6 and any(len(g.split()) > 3 for g in mm.groups()):
-                continue       # „{} über {}“ o. Ä. soll nicht ganze Sätze verschlucken
+            groups = mm.groups()
+            if any(re.search(r"\s·\s|<br>|\n", g) for g in groups) and "·" not in tmpl and "<br>" not in tmpl:
+                continue       # Trennzeichen gehören der Zerlegung, nicht einem Platzhalter
+            if letters < 12 and any(len(g.split()) > 1 and _DE_WORD.search(g) for g in groups):
+                continue       # „{} über {}“ o. Ä. soll nicht ganze deutsche Sätze verschlucken
             vals = []
             for g, is_suf in zip(mm.groups(), suf):
                 if is_suf and g in _SUFFIXES | {""}:
@@ -201,20 +230,8 @@ def _tr(s, depth=0, loose=True):
                     vals.append(_tr(g, depth + 1, loose))
                 else:
                     vals.append(g)
-            en = _fill(tmpl, vals)
-            break
-    if en is None and depth < 3:
-        # zusammengesetzte Zeilen: an „: “ und „ · “ zerlegen, jedes Stück einzeln nachschlagen
-        pieces = re.split(r"(:\s+|\s+·\s+)", core)
-        if len(pieces) > 1:
-            out = [p if i % 2 else _tr(p, depth + 1, loose=False) for i, p in enumerate(pieces)]
-            if out != pieces:
-                en = "".join(out)
-    if en is None:
-        en = core
-    if loose and _TR_SUB and depth == 0:
-        en = _TR_SUB.sub(lambda x: EN[x.group(0)], en)
-    return lead + pre + en + trail
+            return _fill(tmpl, vals)
+    return None
 
 
 def tr(s, loose=True):
@@ -366,7 +383,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.0-beta.3"
+APP_VERSION = "1.1.0"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -13031,6 +13048,8 @@ class MainWindow(QWidget):
 # --------------------------------------------------------------------------
 
 EN = {
+    '$ sudo systemctl restart clamav-freshclam\nDer Dienst clamav-freshclam läuft bereits und lädt die Signaturen selbst.\nNeustart löst sofort eine Prüfung aus – der erste Download (~200 MB) kann einige Minuten dauern.': '$ sudo systemctl restart clamav-freshclam\nThe clamav-freshclam service is already running and loads the signatures itself.\nA restart triggers a check immediately – the first download (~200 MB) can take a few minutes.',
+    '$ {}{}\n(Nur Funde, Warnungen und die Zusammenfassung werden hier angezeigt.)': '$ {}{}\n(Only findings, warnings and the summary are shown here.)',
     "'{}' ist nicht installiert.\n\nsudo pacman -S {}": "'{}' is not installed.\n\nsudo pacman -S {}",
     '(Dienst-Meldungen nicht lesbar – bitte oben rechts anmelden)': '(service messages not readable – please log in at the top right)',
     '(in 4-GB-Teilen wegen FAT32)': '(in 4 GB parts because of FAT32)',
@@ -13312,6 +13331,7 @@ EN = {
     'Das Passwort muss mindestens 8 Zeichen haben.': 'The password must have at least 8 characters.',
     'Das PKGBUILD im Repository gehört nicht zu tuxdex': "The PKGBUILD in the repository doesn't belong to tuxdex",
     'Das System startet im Legacy-BIOS-Modus.': 'The system boots in legacy BIOS mode.',
+    'Das System-Protokoll (systemd-journald) sammelt Meldungen aller Dienste und des Kernels.\n\n„Auf 200 MB kürzen“ führt journalctl --vacuum-size=200M aus: die ältesten Einträge werden gelöscht, bis das Protokoll noch 200 MB belegt. Neue Meldungen werden weiter geschrieben.\n\nDauerhaft begrenzen: Sicherheit → Checkliste → System-Protokoll. Braucht root.': 'The system log (systemd-journald) collects messages from all services and the kernel.\n\n“Shrink to 200 MB” runs journalctl --vacuum-size=200M: the oldest entries are deleted until the log uses 200 MB. New messages keep being written.\n\nLimit permanently: Security → Checklist → System log. Needs root.',
     'Das System-Protokoll auf 500 MB und einen Monat begrenzen?\n\nWird in {} gespeichert. Ältere Einträge werden gelöscht.': 'Limit the system log to 500 MB and one month?\n\nSaved in {}. Older entries will be deleted.',
     'Das Ziel darf nicht gleich einer Quelle sein.': 'The target must not be the same as a source.',
     'Datei konnte nicht ersetzt werden: {}': 'File could not be replaced: {}',
@@ -13383,6 +13403,7 @@ EN = {
     'Direkter Zugriff auf die Grafikkarte für 3D und Video.': 'Direct access to the graphics card for 3D and video.',
     'DNS-Anfragen gehen an {} ({}) über {} – am VPN vorbei. Im VPN-Programm den VPN-DNS erzwingen (Mullvad: Kill-Switch/Lockdown).': 'DNS requests go to {} ({}) via {} – bypassing the VPN. Force the VPN DNS in the VPN program (Mullvad: kill switch/lockdown).',
     'DNS-Server, die Webseiten sehen': 'DNS servers websites see',
+    'Docker speichert Images, Container und Volumes in /var/lib/docker.\n\nZum Aufräumen im Terminal: docker system prune (entfernt gestoppte Container, ungenutzte Netzwerke und Images ohne Namen; mit -a auch alle unbenutzten Images). Volumes bleiben, außer mit --volumes.': 'Docker stores images, containers and volumes in /var/lib/docker.\n\nTo clean up in the terminal: docker system prune (removes stopped containers, unused networks and untagged images; with -a also all unused images). Volumes are kept unless you add --volumes.',
     'Dokumente': 'Documents',
     'Doppelklick zum Öffnen': 'Double-click to open',
     'Download fehlgeschlagen': 'Download failed',
@@ -13487,9 +13508,12 @@ EN = {
     'Flatpak installieren': 'Install Flatpak',
     'Flatpak ist installiert, aber <b>Flathub</b> (die große App-Quelle) ist noch nicht eingerichtet.': "Flatpak is installed, but <b>Flathub</b> (the big app source) isn't set up yet.",
     'flatpak ist nicht installiert': 'flatpak is not installed',
+    'flatpak ist nicht installiert – im Tab „Flatpak“ einrichten.': 'flatpak is not installed – set it up in the “Flatpak” tab.',
     'Flatpak ist nicht installiert. Flatpak-Apps laufen abgeschottet vom System – hier legst du fest, was jede App darf.': 'Flatpak is not installed. Flatpak apps run isolated from the system – here you decide what each app may do.',
     'Flatpak · {}': 'Flatpak · {}',
+    'Flatpak-Apps brauchen Laufzeiten (z. B. GNOME- oder KDE-Plattform). Nach Updates oder dem Deinstallieren von Apps bleiben alte Versionen liegen.\n\n„Unbenutzte entfernen“ führt flatpak uninstall --unused aus. Apps und ihre Daten bleiben erhalten.': 'Flatpak apps need runtimes (e.g. the GNOME or KDE platform). After updates or uninstalling apps, old versions are left behind.\n\n“Remove unused” runs flatpak uninstall --unused. Apps and their data are kept.',
     'Flatpak-Apps und ihre Rechte (Dateien, Geräte, Netzwerk …) wie mit Flatseal': 'Flatpak apps and their permissions (files, devices, network …) like Flatseal',
+    'Flatpak: nur für mich installieren (--user, ohne Passwort)': 'Flatpak: install only for me (--user, no password)',
     'Formatieren': 'Format',
     'Formatieren nicht möglich': 'Formatting not possible',
     'Formatieren von {} {}.': 'Formatting {} {}.',
@@ -13512,7 +13536,7 @@ EN = {
     'fwupd hat nicht geantwortet.': "fwupd didn't respond.",
     'fwupd kennt keine neueren Firmware-Versionen (BIOS, SSD, Dock …).': 'fwupd knows no newer firmware versions (BIOS, SSD, dock …).',
     'Für diese Desktop-Umgebung kann Tuxdex die Sperre nicht auslesen – bitte in den Systemeinstellungen prüfen.': "Tuxdex can't read the lock setting for this desktop environment – please check in the system settings.",
-    'Für erhöhten Schutzbedarf gibt es linux-hardened (manche Programme laufen damit eingeschränkt).': "For higher protection needs there's linux-hardened (some programs run with restrictions).",
+    'Für erhöhten Schutzbedarf gibt es linux-hardened (manche Programme laufen damit eingeschränkt).': "If you need extra protection, there is linux-hardened (some programs run with restrictions).",
     'Für manche Spiele und Kommunikations-Apps nötig.': 'Needed by some games and communication apps.',
     'Für sie „Archiv“ oder „Spiegel“ verwenden – oder abhaken.': 'Use “Archive” or “Mirror” for them – or uncheck them.',
     'Für virtuelle Maschinen und Emulatoren.': 'For virtual machines and emulators.',
@@ -13529,11 +13553,14 @@ EN = {
     'Gemeinsamer Speicher (IPC)': 'Shared memory (IPC)',
     'gerade eben': 'just now',
     'Gerät': 'Device',
+    'Gerät „{}“': 'device “{}”',
     'Geräte': 'Devices',
     'Geräte im lokalen Netz erreichbar (Drucker, NAS …)': 'Devices in the local network reachable (printers, NAS …)',
     'Geräteerkennung (mDNS)': 'Device discovery (mDNS)',
     'Gesamt': 'Total',
     'gesamt': 'total',
+    'gesamt {}': 'total {}',
+    'gesamt ↓ {} ↑ {}': 'total ↓ {} ↑ {}',
     'Geschwindigkeit': 'Speed',
     'Geschützt': 'Protected',
     'Gespeichert': 'Saved',
@@ -13564,6 +13591,7 @@ EN = {
     'Größe berechnen': 'Calculate size',
     'Größen ermitteln': 'Measure sizes',
     'gzip – überall lesbar': 'gzip – readable everywhere',
+    'gültig bis {}': 'valid until {}',
     'Handles = geöffnete Dateien und Verbindungen im ganzen System. Die Last zeigt, wie viele Prozesse im Schnitt auf Rechenzeit warten – mehr als die Zahl der Threads heißt Überlastung.': 'Handles = open files and connections in the whole system. The load shows how many processes are waiting for CPU time on average – more than the number of threads means overload.',
     'Hardware & System': 'Hardware & system',
     'Hersteller': 'Manufacturer',
@@ -13775,6 +13803,8 @@ EN = {
     'Läuft': 'Running',
     'läuft': 'running',
     'Läuft im Hintergrund mit den Einstellungen oben – auch wenn Tuxdex geschlossen ist. Nicht angeschlossene Ziele werden übersprungen, verpasste Termine nachgeholt. Ohne root-Rechte und ohne Passwort-Verschlüsselung.': "Runs in the background with the settings above – even when Tuxdex is closed. Targets that aren't connected are skipped, missed runs are caught up. Without root rights and without password encryption.",
+    'läuft seit {} Std {} Min': 'running for {} h {} min',
+    'läuft seit {} T {} Std {} Min': 'running for {} d {} h {} min',
     'Läuft …': 'Running …',
     'Läuft: {} · installiert: {} – nach einem Neustart aktiv.': 'Running: {} · installed: {} – active after a restart.',
     'Läuft: {}.': 'Running: {}.',
@@ -13805,6 +13835,7 @@ EN = {
     'Mit root-Rechten (nötig für Systemordner)': 'With root rights (needed for system folders)',
     'MIT – frei nutzbar, veränderbar und weitergebbar': 'MIT – free to use, modify and share',
     'Mitglied in:': 'Member of:',
+    'Mitglied in: {}.': 'Member of: {}.',
     'mittel': 'medium',
     'Modell': 'Model',
     'Moderne, abgeschottete Fensterdarstellung.': 'Modern, isolated window display.',
@@ -13891,6 +13922,7 @@ EN = {
     'Noch nie': 'Never',
     'Noch ohne Fix: {}.': 'No fix yet: {}.',
     'Noch zu schreiben': 'Waiting to be written',
+    'noch {}:{} h': '{}:{} h left',
     'Notfall-Treiber': 'Fallback driver',
     'NTFS (Windows)': 'NTFS (Windows)',
     'NTP einschalten': 'Turn on NTP',
@@ -13937,6 +13969,8 @@ EN = {
     'Ort: <code>{}</code> · Quelle: {}': 'Location: <code>{}</code> · source: {}',
     'Packen fehlgeschlagen (tar {}, Packer {}) – Details in der Ausgabe.': 'Packing failed (tar {}, packer {}) – details in the output.',
     'Packt …': 'Packing …',
+    'pacman hebt jede heruntergeladene Paketversion in /var/cache/pacman/pkg auf – über Monate werden das schnell mehrere GB.\n\n„Alte Versionen löschen“ führt paccache -rk2 aus: je Paket bleiben die 2 neuesten Versionen liegen (für ein Zurückstufen, falls ein Update Probleme macht). Zusätzlich entfernt paccache -ruk0 alle Dateien von Paketen, die gar nicht mehr installiert sind. Ohne paccache (Paket pacman-contrib) nutzt Tuxdex pacman -Sc: dann bleibt nur die installierte Version im Cache.\n\nBraucht root. Installierte Programme bleiben unberührt.': 'pacman keeps every downloaded package version in /var/cache/pacman/pkg – over months that quickly adds up to several GB.\n\n“Delete old versions” runs paccache -rk2: the 2 newest versions of each package are kept (for downgrading if an update causes problems). In addition, paccache -ruk0 removes all files of packages that are no longer installed. Without paccache (package pacman-contrib), Tuxdex uses pacman -Sc: then only the installed version stays in the cache.\n\nNeeds root. Installed programs are not touched.',
+    'pacman prüft die Signatur jedes Pakets.': 'pacman checks the signature of every package.',
     'Pacman-Paketcache': 'Pacman package cache',
     'Paket': 'Package',
     'Paket gebaut': 'Package built',
@@ -13954,6 +13988,7 @@ EN = {
     'Papierkorb endgültig leeren?': 'Permanently empty the trash?',
     'Papierkorb leeren': 'Empty trash',
     'Partitionen (eingehängt)': 'Partitions (mounted)',
+    'paru baut AUR-Pakete in ~/.cache/paru/clone und hebt Quellcode und fertige Pakete auf.\n\nZum Aufräumen im Terminal: paru -Sc (fragt nach, was gelöscht wird).': 'paru builds AUR packages in ~/.cache/paru/clone and keeps source code and built packages.\n\nTo clean up in the terminal: paru -Sc (asks what to delete).',
     'paru fehlt': 'paru missing',
     'paru ist nicht installiert.': 'paru is not installed.',
     'Passend': 'Suitable',
@@ -13990,6 +14025,7 @@ EN = {
     'Prozess beenden': 'End process',
     'Prozess erzwingen': 'Force process',
     'Prozesse': 'Processes',
+    'Prozesse ({} von Programmen)': 'Processes ({} from programs)',
     'Prozesse ({} von Programmen) · läuft seit': 'Processes ({} from programs) · running for',
     'Prozesse, Leistung, Hardware- und Netzwerkinfos': 'Processes, performance, hardware and network info',
     'Prozessor': 'Processor',
@@ -14127,6 +14163,8 @@ EN = {
     'Stärke': 'Level',
     'Suche': 'Search',
     'Suche neuesten Stand …': 'Looking for the latest version …',
+    'sudo fragt immer nach dem Passwort.': 'sudo always asks for the password.',
+    'sudo ohne Passwort (NOPASSWD)': 'sudo without password (NOPASSWD)',
     'sudo-Passwort eingeben': 'Enter sudo password',
     'Sudo-Sitzung beendet.': 'Sudo session ended.',
     'Summen seit dem Systemstart.': 'Totals since system start.',
@@ -14180,6 +14218,7 @@ EN = {
     'Test starten': 'Start test',
     'Teste …': 'Testing …',
     'timedatectl meldet keinen Zeitabgleich (kein systemd-timesyncd?).': 'timedatectl reports no time sync (no systemd-timesyncd?).',
+    'Tipp: HISTCONTROL=ignorespace in ~/.bashrc – Befehle mit Leerzeichen davor landen nicht im Verlauf.': "Tip: HISTCONTROL=ignorespace in ~/.bashrc – commands with a leading space don't end up in the history.",
     'Tipp: Kill-Switch (Lockdown) einschalten – dann geht auch bei einem Verbindungsabbruch nichts am Tunnel vorbei.': 'Tip: turn on the kill switch (lockdown) – then nothing bypasses the tunnel even if the connection drops.',
     'Tipp: „Automatische Updates aktivieren“ – der Dienst lädt die Signaturen dann selbstständig und täglich.': 'Tip: “Enable automatic updates” – the service then loads the signatures by itself daily.',
     'Ton & Mikrofon': 'Sound & microphone',
@@ -14289,6 +14328,7 @@ EN = {
     'voll': 'full',
     'voll in': 'full in',
     'Voll in': 'Full in',
+    'voll in {}:{} h': 'full in {}:{} h',
     'Vollversion': 'Full version',
     'Vollversion ausgewählt.': 'Full version selected.',
     'Vollzugriff auf das ganze Dateisystem – hebt die Abschottung weitgehend auf.': 'Full access to the entire file system – largely removes the isolation.',
@@ -14329,6 +14369,7 @@ EN = {
     'Wert {}': 'Value {}',
     'Wichtige offen': 'Important pending',
     'Wie?': 'How?',
+    'Wiedergabe und Aufnahme über PulseAudio/PipeWire.': 'Playback and recording via PulseAudio/PipeWire.',
     'Wiederhergestellt nach {}': 'Restored to {}',
     'Wiederhergestellt: {}': 'Restored: {}',
     'Wiederhergestellt_{}': 'Restored_{}',
@@ -14420,7 +14461,7 @@ EN = {
     '{} GB RAM – mit 10–20 bleibt mehr im schnellen Arbeitsspeicher.': '{} GB RAM – with 10–20 more stays in fast memory.',
     '{} GHz': '{} GHz',
     '{} gibt es nicht.': "{} doesn't exist.",
-    '{} Hinweise': '{} notices',
+    '{} Hinweise': '{} notice(s)',
     '{} Hinweis{}': '{} notice{}',
     '{} ist eine Verknüpfung – bitte den echten Pfad angeben.': '{} is a link – please enter the real path.',
     '{} ist eingehängt ({})': '{} is mounted ({})',
@@ -14455,13 +14496,19 @@ EN = {
     '{} startet jetzt automatisch.': '{} now starts automatically.',
     '{} startet {} automatisch.': '{} starts {} automatically.',
     '{} Std {} Min': '{} h {} min',
+    '{} System-Update · {} wichtig': '{} system update · {} important',
+    '{} System-Updates': '{} system updates',
+    '{} System-Updates · {} wichtig': '{} system updates · {} important',
     '{} Tage alt': '{} days old',
     '{} Threads': '{} threads',
     '{} Treffer': '{} hits',
     '{} Updates': '{} updates',
+    '{} Updates offen, {} wichtig.': '{} updates pending, {} important.',
+    '{} Updates offen.': '{} updates pending.',
     '{} Updates verfügbar': '{} updates available',
     '{} Updates · {} wichtig': '{} updates · {} important',
     '{} verwaist': '{} orphaned',
+    '{} vom {} – wird bei jedem Backup erneuert. Neu installieren: pacman -S --needed - < pakete.txt': '{} from {} – renewed with every backup. Reinstall with: pacman -S --needed - < pakete.txt',
     '{} von {}': '{} of {}',
     '{} von {} Zielen erfolgreich · {} · Dauer {}:{}:{}': '{} of {} targets successful · {} · duration {}:{}:{}',
     '{} Wh': '{} Wh',

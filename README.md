@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.3-e9c46a">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-2fb3a3">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -71,6 +71,8 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 | ![Datenträger](docs/screenshots/disks.png) | ![Speicher](docs/screenshots/storage.png) |
 | **Sicherheit** | **Taskmanager** |
 | ![Sicherheit](docs/screenshots/security.png) | ![Taskmanager](docs/screenshots/tasks.png) |
+| **Checkliste** | |
+| ![Checkliste](docs/screenshots/checklist.png) | |
 
 <sub>Die Screenshots zeigen Beispieldaten.</sub>
 

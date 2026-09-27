@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.3-e9c46a">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-2fb3a3">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-2fb3a3">
   <img alt="For Arch Linux" src="https://img.shields.io/badge/for-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -34,7 +34,7 @@ Tuxdex bundles into one clear interface what otherwise takes a dozen terminal co
 
 Every command runs **visibly** in the output box, so you always see what's happening. Questions from `pacman` or `paru` appear as windows. The sudo password is asked **once per session** and never stored.
 
-**Language:** English and German. Tuxdex follows your system language; you can switch under **Settings (gear at the bottom left) → Language**. The screenshots below show the German interface.
+**Language:** English and German. Tuxdex follows your system language; you can switch under **Settings (gear at the bottom left) → Language**.
 
 <p align="center">
   <img src="docs/readme/modules.png" alt="The 11 modules of Tuxdex" width="100%">
@@ -64,13 +64,15 @@ Every command runs **visibly** in the output box, so you always see what's happe
 
 | Updates | Backup |
 |---|---|
-| ![Updates](docs/screenshots/update.png) | ![Backup](docs/screenshots/backup.png) |
+| ![Updates](docs/screenshots/en/update.png) | ![Backup](docs/screenshots/en/backup.png) |
 | **Software** | **Flatpak** |
-| ![Software](docs/screenshots/software.png) | ![Flatpak](docs/screenshots/flatpak.png) |
+| ![Software](docs/screenshots/en/software.png) | ![Flatpak](docs/screenshots/en/flatpak.png) |
 | **Drives** | **Storage** |
-| ![Drives](docs/screenshots/disks.png) | ![Storage](docs/screenshots/storage.png) |
+| ![Drives](docs/screenshots/en/disks.png) | ![Storage](docs/screenshots/en/storage.png) |
 | **Security** | **Task manager** |
-| ![Security](docs/screenshots/security.png) | ![Task manager](docs/screenshots/tasks.png) |
+| ![Security](docs/screenshots/en/security.png) | ![Task manager](docs/screenshots/en/tasks.png) |
+| **Checklist** | |
+| ![Checklist](docs/screenshots/en/checklist.png) | |
 
 <sub>The screenshots show sample data.</sub>
 
