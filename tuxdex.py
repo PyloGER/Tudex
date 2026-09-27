@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.5.6"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -7388,22 +7388,31 @@ class UpdatePanel(QWidget):
         self.changes.hide()
         p.body.addWidget(self.changes)
 
+        # Version: Vollversion oder Beta – Umschalter wie in den Tabs
+        self.branches = ["main", "beta"]
+        cur = self.settings.get("branch", "main")
+        if cur not in self.branches:
+            self.branches.append(cur)
+        labels = {"main": "Vollversion", "beta": "Beta"}
+        p.body.addWidget(Label("VERSION", "FieldLabel"))
+        crow = QHBoxLayout()
+        crow.setSpacing(12)
+        self.channel = Segmented([labels.get(b, f"Zweig {b}") for b in self.branches], self._channel_changed)
+        self.channel.set(self.branches.index(cur))
+        crow.addWidget(self.channel)
+        self.channel_info = Label("", "Muted", wrap=True)
+        self.channel_info.setTextFormat(Qt.RichText)
+        crow.addWidget(self.channel_info, 1)
+        p.body.addLayout(crow)
+        self.remote_versions = {}
+        self._show_channel_info()
+
         # GitHub-Quelle
         src = QHBoxLayout()
         src.setSpacing(8)
         self.repo_edit = LineEdit(self.settings.get("repo", ""), placeholder="benutzer/tuxdex oder GitHub-Link",
                                   mono=True)
-        self.channel = QComboBox()
-        self.channel.setMinimumHeight(38)
-        self.channel.addItem("Vollversion (empfohlen)", "main")
-        self.channel.addItem("Beta – neue Funktionen früher", "beta")
-        cur = self.settings.get("branch", "main")
-        if self.channel.findData(cur) < 0:
-            self.channel.addItem(f"Zweig „{cur}“", cur)
-        self.channel.setCurrentIndex(self.channel.findData(cur))
-        self.channel.currentIndexChanged.connect(self._channel_changed)
         src.addLayout(Field("GitHub-Repository", self.repo_edit), 1)
-        src.addLayout(Field("Version", self.channel))
         sb = QVBoxLayout()
         sb.addStretch(1)
         sb.addWidget(Button("Speichern", "ghost", self.save_source))
@@ -7461,26 +7470,37 @@ class UpdatePanel(QWidget):
             show_warning(self, "Repository", "Bitte „benutzer/repo“ oder einen GitHub-Link angeben.")
             return
         self.settings["repo"] = repo
-        self.settings["branch"] = self.channel.currentData() or "main"
         self.repo_edit.setText(repo)
         save_settings(self.settings)
         self.app.set_status("Update-Quelle gespeichert.")
         if repo:
             self.check()
 
-    def _channel_changed(self, _=0):
-        branch = self.channel.currentData() or "main"
-        if branch == "beta" and self.settings.get("branch") != "beta" and not ask_confirm(
+    def _channel_changed(self, idx):
+        branch = self.branches[idx]
+        old = self.settings.get("branch", "main")
+        if branch == old:
+            return
+        if branch == "beta" and not ask_confirm(
                 self, "Beta-Versionen", "Beta-Versionen bekommen neue Funktionen früher, können aber noch Fehler "
                 "haben.\n\nZurück zur Vollversion geht jederzeit hier.", "Beta verwenden"):
-            self.channel.blockSignals(True)
-            self.channel.setCurrentIndex(self.channel.findData(self.settings.get("branch", "main")))
-            self.channel.blockSignals(False)
+            self.channel.set(self.branches.index(old))
             return
         self.settings["branch"] = branch
         save_settings(self.settings)
         self.app.set_status("Beta-Versionen aktiv." if branch == "beta" else "Vollversion ausgewählt.")
+        self._show_channel_info()
         self.check()
+
+    def _show_channel_info(self):
+        """Welche Version gibt es in welchem Zweig – und was ist installiert?"""
+        rv = self.remote_versions
+        inst = "Beta" if "beta" in APP_VERSION or "rc" in APP_VERSION else "Vollversion"
+        parts = []
+        for b, name in (("main", "Vollversion"), ("beta", "Beta")):
+            v = rv.get(b)
+            parts.append(f"{name}: <b>{v}</b>" if v else f"{name}: {'…' if b not in rv else '—'}")
+        self.channel_info.setText(" · ".join(parts) + f"<br>Installiert: <b>{APP_VERSION}</b> ({inst})")
 
     def _auto_changed(self, on):
         self.settings["auto_check"] = on
@@ -7510,7 +7530,16 @@ class UpdatePanel(QWidget):
                 res = (ver, cl, None)
             except Exception as e:
                 res = (None, "", str(e))
-            ui(lambda: self._checked(*res, silent=silent))
+            # auch den jeweils anderen Zweig abfragen, damit beide Versionen angezeigt werden
+            vers = {branch: res[0]}
+            for b in ("main", "beta"):
+                if b not in vers:
+                    try:
+                        vers[b] = remote_info(repo, b)[0]
+                    except Exception:
+                        vers[b] = None
+            ui(lambda: (self.remote_versions.update(vers), self._show_channel_info(),
+                        self._checked(*res, silent=silent)))
         threading.Thread(target=worker, daemon=True).start()
 
     def _checked(self, ver, cl, err, silent=False):
