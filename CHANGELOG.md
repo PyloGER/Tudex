@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0-beta.5
+- Taskmanager → **Autostart**:
+  - Autostart-Programme per Schalter an/aus, eigene Einträge entfernen, installierte Programme hinzufügen. System-Einträge bleiben unangetastet – Tuxdex legt nur eine eigene Einstellung in `~/.config/autostart` an.
+  - Hintergrunddienste des Benutzers (`systemd --user`) an/aus.
+  - **Bootzeit**: Dauer des letzten Starts, aufgeteilt in Firmware, Bootloader, Kernel, Initramfs und Dienste, dazu die langsamsten Dienste. Bekannte Bremsen wie `NetworkManager-wait-online` lassen sich per Knopf deaktivieren.
+
 ## 1.6.0-beta.4
 - Taskmanager: **Prozesse nach Programm gruppiert** – jedes Programm ist ein aufklappbarer Ordner mit Summe für CPU, Arbeitsspeicher und Datenträger (z. B. „Spotify (3)“). „Alle beenden“ / „Alle erzwingen“ beendet alle Prozesse eines Ordners auf einmal, auch Priorität gilt für alle. Aufgeklappte Ordner bleiben beim Aktualisieren offen; abschaltbar über „Nach Programm gruppieren“.
 

@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.4"
+APP_VERSION = "1.6.0-beta.5"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -5189,6 +5189,229 @@ def energy_label(cpu):
     return "sehr hoch"
 
 
+
+# ---- Autostart & Bootzeit -------------------------------------------------
+
+AUTOSTART_USER = os.path.join(os.path.expanduser("~/.config"), "autostart")
+AUTOSTART_SYSTEM = "/etc/xdg/autostart"
+APP_DIRS = [os.path.expanduser("~/.local/share/applications"), "/usr/share/applications",
+            "/var/lib/flatpak/exports/share/applications",
+            os.path.expanduser("~/.local/share/flatpak/exports/share/applications")]
+
+
+def read_desktop(path):
+    """[Desktop Entry] als dict (nur Hauptgruppe, erster Wert gewinnt)."""
+    entry, main = {}, False
+    for line in _read(path).splitlines():
+        if line.startswith("["):
+            main = line.strip() == "[Desktop Entry]"
+        elif main and "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            entry.setdefault(k.strip(), v.strip())
+    return entry
+
+
+def _desktop_off(e):
+    return e.get("Hidden", "").lower() == "true" or e.get("X-GNOME-Autostart-enabled", "").lower() == "false"
+
+
+def _desktop_shown(e):
+    """Gilt der Eintrag in dieser Desktop-Umgebung (OnlyShowIn/NotShowIn)?"""
+    cur = [d.lower() for d in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":") if d]
+    only = [d.lower() for d in e.get("OnlyShowIn", "").split(";") if d]
+    not_ = [d.lower() for d in e.get("NotShowIn", "").split(";") if d]
+    if only and cur and not set(only) & set(cur):
+        return False
+    return not (not_ and set(not_) & set(cur))
+
+
+def autostart_entries():
+    """[{id, name, icon, exec, comment, on, source: user|system|both, path}] – Benutzer überschreibt System."""
+    res = {}
+    for src, d in (("system", AUTOSTART_SYSTEM), ("user", AUTOSTART_USER)):
+        try:
+            files = sorted(f for f in os.listdir(d) if f.endswith(".desktop"))
+        except OSError:
+            continue
+        for fn in files:
+            e = read_desktop(os.path.join(d, fn))
+            if not e:
+                continue
+            prev = res.get(fn)
+            if src == "system" and not _desktop_shown(e):
+                continue
+            item = {"id": fn, "name": e.get("Name") or fn[:-8], "icon": e.get("Icon", ""),
+                    "exec": e.get("Exec", ""), "comment": e.get("Comment", ""), "on": not _desktop_off(e),
+                    "source": "both" if prev else src, "path": os.path.join(d, fn)}
+            if prev and not item["exec"]:            # Benutzer-Kopie nur mit Hidden=true
+                item.update(name=prev["name"], icon=prev["icon"], exec=prev["exec"], comment=prev["comment"])
+            res[fn] = item
+    return sorted(res.values(), key=lambda x: x["name"].lower())
+
+
+def autostart_set(entry, on):
+    """Ein/aus nach XDG-Regel: eigene Kopie in ~/.config/autostart mit Hidden=true/false."""
+    os.makedirs(AUTOSTART_USER, exist_ok=True)
+    dst = os.path.join(AUTOSTART_USER, entry["id"])
+    src = dst if os.path.exists(dst) else os.path.join(AUTOSTART_SYSTEM, entry["id"])
+    lines = _read(src).splitlines() or ["[Desktop Entry]", "Type=Application", f"Name={entry['name']}",
+                                         f"Exec={entry['exec']}"]
+    out, main, done = [], False, False
+    for line in lines:
+        if line.startswith("["):
+            if main and not done:
+                out.append(f"Hidden={'false' if on else 'true'}")
+                done = True
+            main = line.strip() == "[Desktop Entry]"
+        elif main and line.split("=", 1)[0].strip() in ("Hidden", "X-GNOME-Autostart-enabled"):
+            continue
+        out.append(line)
+    if not done:
+        out.append(f"Hidden={'false' if on else 'true'}")
+    with open(dst, "w") as f:
+        f.write("\n".join(out) + "\n")
+
+
+def autostart_add(desktop_path):
+    os.makedirs(AUTOSTART_USER, exist_ok=True)
+    dst = os.path.join(AUTOSTART_USER, os.path.basename(desktop_path))
+    shutil.copyfile(desktop_path, dst)
+    autostart_set({"id": os.path.basename(desktop_path), "name": "", "exec": ""}, True)
+    return dst
+
+
+def installed_apps():
+    """[(name, pfad)] aller sichtbaren Programme – für „Programm hinzufügen“."""
+    seen, res = set(), []
+    for d in APP_DIRS:
+        try:
+            files = os.listdir(d)
+        except OSError:
+            continue
+        for fn in files:
+            if not fn.endswith(".desktop") or fn in seen:
+                continue
+            e = read_desktop(os.path.join(d, fn))
+            if e.get("Type", "Application") != "Application" or e.get("NoDisplay", "").lower() == "true" \
+                    or not e.get("Exec") or not _desktop_shown(e):
+                continue
+            seen.add(fn)
+            res.append((e.get("Name", fn[:-8]), os.path.join(d, fn), e.get("Icon", "")))
+    return sorted(res, key=lambda x: x[0].lower())
+
+
+def user_services():
+    """Aktivierte systemd-Benutzerdienste: [(unit, beschreibung, aktiv)]"""
+    try:
+        out = subprocess.run(["systemctl", "--user", "list-unit-files", "--type=service", "--state=enabled",
+                              "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    res = []
+    for line in out.splitlines():
+        unit = line.split()[0] if line.split() else ""
+        if not unit or "@" in unit:
+            continue
+        try:
+            desc = subprocess.run(["systemctl", "--user", "show", unit, "-p", "Description", "--value"],
+                                  capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            desc = ""
+        res.append((unit, desc, svc_user_active(unit)))
+    return res
+
+
+def svc_user_active(unit):
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True,
+                              timeout=3).stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+# Dienste, die oft den Start bremsen und meist gefahrlos entfallen können
+SLOW_HINTS = {
+    "NetworkManager-wait-online.service": "Wartet beim Start aufs Netzwerk – auf Desktops meist unnötig.",
+    "systemd-networkd-wait-online.service": "Wartet beim Start aufs Netzwerk – auf Desktops meist unnötig.",
+}
+
+
+class TimeBar(QWidget):
+    """Name links, Dauer rechts, dünner Balken darunter (Bootzeit)."""
+
+    def __init__(self, label, value, frac, warn=False):
+        super().__init__()
+        self.label, self.value, self.frac, self.warn = label, value, max(0.0, min(1.0, frac)), warn
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        return QSize(320, 30)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        p.setFont(QFont(FONTS["mono"], 10))
+        p.setPen(QColor(COLORS["ink"]))
+        p.drawText(QRectF(0, 0, w - 90, 18), Qt.AlignLeft | Qt.AlignVCenter, self.label)
+        p.drawText(QRectF(w - 90, 0, 90, 18), Qt.AlignRight | Qt.AlignVCenter, self.value)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(COLORS["bg3"]))
+        p.drawRoundedRect(QRectF(0, 22, w, 6), 3, 3)
+        p.setBrush(QColor(COLORS["warn" if self.warn else "accent"]))
+        if self.frac > 0:
+            p.drawRoundedRect(QRectF(0, 22, max(6, w * self.frac), 6), 3, 3)
+        p.end()
+
+
+def _secs(txt):
+    """„1min 2.345s“, „850ms“ → Sekunden"""
+    total = 0.0
+    for num, unit in re.findall(r"([\d.]+)\s*(min|ms|us|s|h)\b", txt):
+        total += float(num) * {"h": 3600, "min": 60, "s": 1, "ms": 0.001, "us": 1e-6}[unit]
+    return total
+
+
+def boot_times():
+    """{phases: [(name, sek)], total, target, blame: [(sek, unit)]} über systemd-analyze – None ohne systemd."""
+    if not which("systemd-analyze"):
+        return None
+    try:
+        t = subprocess.run(["systemd-analyze", "time"], capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "LC_ALL": "C"}).stdout
+    except Exception:
+        return None
+    m = re.search(r"Startup finished in (.+?)=\s*(.+)", t)
+    if not m:
+        return {"error": (t.strip() or "Der Start ist noch nicht abgeschlossen.")}
+    names = {"firmware": "Firmware (UEFI/BIOS)", "loader": "Bootloader", "kernel": "Kernel",
+             "initrd": "Initramfs", "userspace": "System (Dienste)"}
+    phases = [(names.get(k, k), _secs(v)) for v, k in re.findall(r"([\d.]+(?:min|ms|us|s|h)(?:\s*[\d.]+(?:ms|s))?)"
+                                                                    r"\s*\((\w+)\)", m.group(1))]
+    tgt = re.search(r"graphical\.target reached after (.+?) in userspace", t)
+    blame = []
+    try:
+        b = subprocess.run(["systemd-analyze", "blame", "--no-pager"], capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "LC_ALL": "C"}).stdout
+        for line in b.splitlines():
+            parts = line.strip().rsplit(" ", 1)
+            if len(parts) == 2:
+                blame.append((_secs(parts[0]), parts[1]))
+    except Exception:
+        pass
+    # Dienste, die ein Timer auslöst (snapper-cleanup, man-db …), laufen nach dem Start – nicht mitzählen
+    try:
+        timers = subprocess.run(["systemctl", "list-unit-files", "--type=timer", "--no-legend", "--no-pager"],
+                                capture_output=True, text=True, timeout=5).stdout
+        timed = {l.split()[0].removesuffix(".timer") + ".service" for l in timers.splitlines() if l.split()}
+    except Exception:
+        timed = set()
+    blame = [b for b in blame if b[1] not in timed]
+    return {"phases": phases, "total": _secs(m.group(2)), "target": _secs(tgt.group(1)) if tgt else None,
+            "blame": sorted(blame, reverse=True)[:12]}
+
+
 class _SortItem(QTreeWidgetItem):
     """Baumzeile, die nach Zahlen statt nach Text sortiert (CPU, RAM …)."""
 
@@ -5224,7 +5447,7 @@ class TaskTab(Page):
 
         self.badge = StatusBadge("info", "Live · alle 2 s")
         self.pause_btn = Button("Pausieren", "ghost", self.toggle_pause)
-        self.seg = Segmented(["Prozesse", "Leistung", "System"], self._switch)
+        self.seg = Segmented(["Prozesse", "Leistung", "System", "Autostart"], self._switch)
         self.lay.addLayout(page_header("Taskmanager", self.seg, self.badge, self.pause_btn))
 
         self.views = QStackedWidget()
@@ -5361,6 +5584,44 @@ class TaskTab(Page):
         sl.addStretch(1)
         self.views.addWidget(sv)
 
+        # ---------- Autostart & Bootzeit ----------
+        av = QWidget()
+        al = QVBoxLayout(av)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(16)
+        self.add_app_cb = QComboBox()
+        self.add_app_cb.setMinimumWidth(260)
+        self.add_app_cb.setMinimumHeight(38)
+        ap = Panel("Autostart-Programme", [self.add_app_cb, Button("Hinzufügen", "ghost", self.autostart_add),
+                                           Button("↻", "icon", self.load_autostart, "Neu einlesen")])
+        ap.body.addWidget(Label("Programme, die nach der Anmeldung automatisch starten. Ausschalten ist jederzeit "
+                                "umkehrbar – für System-Einträge legt Tuxdex nur eine eigene Einstellung in "
+                                "~/.config/autostart an.", "Hint", wrap=True))
+        self.as_box = QVBoxLayout()
+        self.as_box.setSpacing(2)
+        ap.body.addLayout(self.as_box)
+        al.addWidget(ap)
+        sp = Panel("Hintergrunddienste des Benutzers (systemd --user)")
+        self.us_box = QVBoxLayout()
+        self.us_box.setSpacing(2)
+        sp.body.addLayout(self.us_box)
+        al.addWidget(sp)
+        bp = Panel("Bootzeit", [Button("↻", "icon", self.load_boot, "Neu messen")])
+        self.boot_head = Label("", "Value", wrap=True)
+        bp.body.addWidget(self.boot_head)
+        self.boot_phases = QVBoxLayout()
+        self.boot_phases.setSpacing(4)
+        bp.body.addLayout(self.boot_phases)
+        bp.body.addWidget(Label("LANGSAMSTE DIENSTE BEIM START", "FieldLabel"))
+        self.boot_blame = QVBoxLayout()
+        self.boot_blame.setSpacing(2)
+        bp.body.addLayout(self.boot_blame)
+        bp.body.addWidget(Label("Dienste starten größtenteils parallel – die Zeiten addieren sich nicht. Entscheidend "
+                                "ist vor allem „System (Dienste)“.", "Hint", wrap=True))
+        al.addWidget(bp)
+        al.addStretch(1)
+        self.views.addWidget(av)
+
         self._sel_changed()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -5373,6 +5634,158 @@ class TaskTab(Page):
         self.views.setCurrentIndex(idx)
         if idx == 2:
             self.load_system()
+        elif idx == 3:
+            self.load_autostart()
+            self.load_boot()
+
+    # ---- Autostart --------------------------------------------------------
+
+    def load_autostart(self):
+        def worker():
+            ents, svcs, apps = autostart_entries(), user_services(), installed_apps()
+            ui(lambda: self._show_autostart(ents, svcs, apps))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _as_row(self, icon, name, detail, on, toggle, remove=None):
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 4, 0, 4)
+        h.setSpacing(12)
+        ic = QLabel()
+        qi = themed_icon(icon) if icon else QIcon()
+        ic.setPixmap((qi if not qi.isNull() else letter_icon(name)).pixmap(24, 24))
+        ic.setFixedSize(24, 24)
+        h.addWidget(ic)
+        txt = QVBoxLayout()
+        txt.setSpacing(0)
+        txt.addWidget(Label(name, "PanelTitle"))
+        d = Label(detail, "Hint")
+        d.setToolTip(detail)
+        txt.addWidget(d)
+        h.addLayout(txt, 1)
+        if remove:
+            h.addWidget(Button("Entfernen", "ghost", remove))
+        sw = Switch()
+        sw.setChecked(on)
+        sw.toggled.connect(toggle)
+        h.addWidget(sw)
+        return w
+
+    def _show_autostart(self, ents, svcs, apps):
+        self._clear(self.as_box)
+        if not ents:
+            self.as_box.addWidget(Label("Keine Autostart-Programme.", "Muted"))
+        src = {"user": "eigener Eintrag", "system": "vom System", "both": "vom System · angepasst"}
+        for e in ents:
+            cmd = e["exec"].replace("%U", "").replace("%u", "").replace("%F", "").replace("%f", "").strip()
+            self.as_box.addWidget(self._as_row(
+                e["icon"], e["name"], f"{src[e['source']]} · {cmd}", e["on"],
+                lambda on, e=e: self._as_toggle(e, on),
+                (lambda _=False, e=e: self._as_remove(e)) if e["source"] == "user" else None))
+        self._clear(self.us_box)
+        if not svcs:
+            self.us_box.addWidget(Label("Keine aktivierten Benutzerdienste.", "Muted"))
+        for unit, desc, active in svcs:
+            self.us_box.addWidget(self._as_row(
+                "", unit.removesuffix(".service"), f"{desc or unit} · {'läuft' if active else 'gestoppt'}", True,
+                lambda on, u=unit: self._svc_toggle(u, on)))
+        cur = {e["id"] for e in ents}
+        self.add_app_cb.clear()
+        self.add_app_cb.addItem("Programm auswählen …", None)
+        for name, path, icon in apps:
+            if os.path.basename(path) not in cur:
+                qi = themed_icon(icon) if icon else QIcon()
+                self.add_app_cb.addItem(qi if not qi.isNull() else letter_icon(name), name, path)
+
+    def _as_toggle(self, e, on):
+        try:
+            autostart_set(e, on)
+            self.app.set_status(f"{e['name']} startet {'jetzt' if on else 'nicht mehr'} automatisch.")
+        except OSError as err:
+            show_error(self, "Autostart", f"Konnte nicht speichern: {err}")
+        self.load_autostart()
+
+    def _as_remove(self, e):
+        if ask_confirm(self, "Autostart", f"{e['name']} aus dem Autostart entfernen?", "Entfernen"):
+            try:
+                os.remove(e["path"])
+            except OSError:
+                pass
+            self.load_autostart()
+
+    def autostart_add(self):
+        path = self.add_app_cb.currentData()
+        if not path:
+            return
+        try:
+            autostart_add(path)
+            self.app.set_status(f"{self.add_app_cb.currentText()} startet jetzt automatisch.")
+        except OSError as err:
+            show_error(self, "Autostart", f"Konnte nicht speichern: {err}")
+        self.load_autostart()
+
+    def _svc_toggle(self, unit, on):
+        if not on and not ask_confirm(self, "Dienst", f"{unit} nicht mehr automatisch starten und jetzt stoppen?",
+                                      "Deaktivieren"):
+            self.load_autostart()
+            return
+        run_capture_async(["systemctl", "--user", "enable" if on else "disable", "--now", unit],
+                          lambda rc, o, e: (self.app.set_status(
+                              f"{unit} {'aktiviert' if on else 'deaktiviert'}." if rc == 0
+                              else f"Fehler: {e.strip()}"), self.load_autostart()))
+
+    # ---- Bootzeit ---------------------------------------------------------
+
+    def load_boot(self):
+        self.boot_head.setText("Wird gemessen …")
+
+        def worker():
+            b = boot_times()
+            ui(lambda: self._show_boot(b))
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _fmt_s(sec):
+        return f"{sec / 60:.0f} min {sec % 60:.0f} s" if sec >= 60 else f"{sec:.1f} s"
+
+    def _show_boot(self, b):
+        self._clear(self.boot_phases)
+        self._clear(self.boot_blame)
+        if not b:
+            self.boot_head.setText("systemd-analyze ist nicht verfügbar.")
+            return
+        if b.get("error"):
+            self.boot_head.setText(b["error"])
+            return
+        tone = "schnell" if b["total"] < 20 else ("normal" if b["total"] < 45 else "langsam")
+        self.boot_head.setText(f"Letzter Start: {self._fmt_s(b['total'])} ({tone})"
+                               + (f" · Anmeldebildschirm nach {self._fmt_s(b['target'])} Systemzeit"
+                                  if b.get("target") else ""))
+        top = max([s for _, s in b["phases"]] + [0.001])
+        for name, sec in b["phases"]:
+            self.boot_phases.addWidget(TimeBar(name, self._fmt_s(sec), sec / top))
+        topb = b["blame"][0][0] if b["blame"] else 1
+        for sec, unit in b["blame"]:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            bar = TimeBar(unit, self._fmt_s(sec), sec / topb, warn=unit in SLOW_HINTS)
+            row.addWidget(bar, 1)
+            hint = SLOW_HINTS.get(unit)
+            if hint:
+                bar.setToolTip(hint)
+                row.addWidget(Button("Deaktivieren", "ghost", lambda _=False, u=unit: self._disable_unit(u), hint))
+            self.boot_blame.addLayout(row)
+
+    def _disable_unit(self, unit):
+        if not ask_confirm(self, "Dienst deaktivieren", f"{unit} beim Start nicht mehr ausführen?\n\n"
+                           f"{SLOW_HINTS.get(unit, '')}\nRückgängig: sudo systemctl enable {unit}", "Deaktivieren"):
+            return
+        if not self.app.priv.ensure(self):
+            return
+        run_capture_async(["systemctl", "disable", unit],
+                          lambda rc, o, e: self.app.set_status(f"{unit} deaktiviert – wirkt beim nächsten Start."
+                                                               if rc == 0 else f"Fehler: {e.strip()}"),
+                          needs_sudo=True)
 
     def toggle_pause(self):
         if self.timer.isActive():

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.6.0--beta.4-e9c46a">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.6.0--beta.5-e9c46a">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -38,7 +38,7 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 | **Speicher** | Belegung je Festplatte · „Was belegt den Platz?“ mit Drill-down in Ordner · Aufräumen: Paket-Cache, verwaiste Pakete, Journal, Papierkorb, Flatpak |
 | **Backup** | Snapshots (versioniert, platzsparend), Spiegel oder komprimierte Archive (zstd/xz/gzip, optional mit Passwort) · **mehrere Ziele gleichzeitig** · Prüfung nach dem Schreiben · alte Versionen automatisch aufräumen · wiederherstellen · Zeitplan täglich/wöchentlich |
 | **Swap** | Swapfile anlegen und entfernen, Swappiness einstellen |
-| **Taskmanager** | Prozesse mit Programm-Icons, CPU, RAM, Datenträger-I/O, Energie-Schätzung · Leistung: CPU (Takt, Temperatur), RAM, GPU, Netzwerk, Datenträger, Akku · System: CPU-/GPU-Name, Mainboard, IP-Adressen, DNS · **Versionsstand** von Grafiktreiber, Microcode, BIOS, Kernel, Firmware |
+| **Taskmanager** | Prozesse mit Programm-Icons, CPU, RAM, Datenträger-I/O, Energie-Schätzung · Leistung: CPU (Takt, Temperatur), RAM, GPU, Netzwerk, Datenträger, Akku · System: CPU-/GPU-Name, Mainboard, IP-Adressen, DNS · **Autostart & Bootzeit** · **Versionsstand** von Grafiktreiber, Microcode, BIOS, Kernel, Firmware |
 | **Antivirus** | Bedienung für ein bereits installiertes ClamAV (optional): Signaturen aktualisieren, Ordner oder ganzes System scannen – mit **Live-Fortschritt** (Dateien, Datenmenge, Tempo, Restzeit) und Status, ob der Scan läuft oder hängt · Quarantäne mit Wiederherstellen |
 | **Sicherheit** | Sicherheits-Check (VPN, DNS, Proxy, Firewall, LUKS, Secure Boot, CPU-Microcode, Swap-Verschlüsselung, Kernel-Schutz, Updates, Antivirus, offene Ports, SSH) · **DNS-Leak-Test & VPN/Proxy-Erkennung** · **offene Ports per Knopf sperren/freigeben** · Bedienung für ein bereits installiertes **Mullvad VPN** (optional: Konto, Standort, Kill-Switch, DNS-Filter) · ufw-Firewall mit Regeln |
 | **Benutzer** | Benutzerkonten und letzte Anmeldung |
