@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.3"
+APP_VERSION = "1.6.0-beta.4"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -5189,6 +5189,22 @@ def energy_label(cpu):
     return "sehr hoch"
 
 
+class _SortItem(QTreeWidgetItem):
+    """Baumzeile, die nach Zahlen statt nach Text sortiert (CPU, RAM …)."""
+
+    def __init__(self, texts, keys):
+        super().__init__(texts)
+        self.keys = keys
+
+    def __lt__(self, other):
+        c = self.treeWidget().sortColumn() if self.treeWidget() else 0
+        a, b = self.keys[c], getattr(other, "keys", [None] * 9)[c]
+        try:
+            return a < b
+        except TypeError:
+            return str(a) < str(b)
+
+
 class TaskTab(Page):
     COLS = [("Name", 230), ("PID", 70), ("Benutzer", 95), ("CPU", 70), ("Arbeitsspeicher", 115),
             ("Datenträger", 100), ("Energie (gesch.)", 120), ("Status", 100), ("Befehl", 300)]
@@ -5239,28 +5255,34 @@ class TaskTab(Page):
         self.filter.setMinimumHeight(38)
         self.filter.currentIndexChanged.connect(lambda _: self._render())
         top.addWidget(self.filter)
+        self.cb_group = QCheckBox("Nach Programm gruppieren")
+        self.cb_group.setChecked(True)
+        self.cb_group.toggled.connect(lambda _: self._render())
+        top.addWidget(self.cb_group)
         pp.body.addLayout(top)
 
-        self.table = QTableWidget(0, len(self.COLS))
-        self.table.setHorizontalHeaderLabels([c[0].upper() for c in self.COLS])
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setIconSize(QSize(20, 20))
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.verticalHeader().setDefaultSectionSize(30)
-        hh = self.table.horizontalHeader()
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(len(self.COLS))
+        self.tree.setHeaderLabels([c[0].upper() for c in self.COLS])
+        self.tree.setIconSize(QSize(20, 20))
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAnimated(False)
+        hh = self.tree.header()
         hh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         hh.setStretchLastSection(True)
         hh.setSortIndicatorShown(True)
         for i, (_, w) in enumerate(self.COLS):
-            self.table.setColumnWidth(i, w)
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(3, Qt.DescendingOrder)
-        self.table.setMinimumHeight(420)
-        self.table.itemSelectionChanged.connect(self._sel_changed)
-        pp.body.addWidget(self.table, 1)
+            self.tree.setColumnWidth(i, w + (40 if i == 0 else 0))
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(3, Qt.DescendingOrder)
+        self.tree.setMinimumHeight(420)
+        self.tree.itemSelectionChanged.connect(self._sel_changed)
+        self.tree.itemExpanded.connect(lambda it: self.expanded.add(it.data(0, Qt.UserRole)))
+        self.tree.itemCollapsed.connect(lambda it: self.expanded.discard(it.data(0, Qt.UserRole)))
+        self.expanded = set()       # aufgeklappte Gruppen bleiben beim Aktualisieren offen
+        pp.body.addWidget(self.tree, 1)
 
         acts = QHBoxLayout()
         acts.setSpacing(8)
@@ -5518,72 +5540,134 @@ class TaskTab(Page):
                 continue
             rows.append((pid, p))
 
-        sel_pid = self._selected_pid()
-        vbar = self.table.verticalScrollBar().value()
-        sort_col = self.table.horizontalHeader().sortIndicatorSection()
-        sort_ord = self.table.horizontalHeader().sortIndicatorOrder()
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
+        # Gruppen: Programme nach Name, Hintergrundprozesse nach Prozessname (kworker/0:1 → kworker)
+        groups = {}
+        for pid, p in rows:
+            if self.cb_group.isChecked():
+                key = "app:" + p["app"][1] if p.get("app") else "proc:" + p["name"].split("/")[0]
+            else:
+                key = f"pid:{pid}"
+            groups.setdefault(key, []).append((pid, p))
+
+        sel = self._selected_key()
+        vbar = self.tree.verticalScrollBar().value()
+        sort_col = self.tree.header().sortIndicatorSection()
+        sort_ord = self.tree.header().sortIndicatorOrder()
+        self.tree.blockSignals(True)
+        self.tree.setSortingEnabled(False)
+        self.tree.clear()
         mono = QFont(FONTS["mono"], 10)
         hot = QColor(COLORS["warn"])
-        for r, (pid, p) in enumerate(rows):
-            app = p.get("app")
-            label = app[1] if app else p["name"]
-            name_it = QTableWidgetItem(label)
-            if app:
-                ic = themed_icon(app[0])
-                name_it.setIcon(ic if not ic.isNull() else letter_icon(label))
-            elif not p["cmd"].startswith("["):
-                name_it.setIcon(letter_icon(p["name"]))
-            else:
-                name_it.setIcon(QIcon())
-            iorate = p.get("io_rate")
-            cells = [
-                name_it,
-                NumItem(str(pid), pid),
-                QTableWidgetItem(p["user"]),
-                NumItem(f"{p['cpu']:.1f} %", p["cpu"]),
-                NumItem(fmt_bytes(p["rss"]), p["rss"]),
-                NumItem("—" if iorate is None else (f"{fmt_bytes(iorate)}/s" if iorate else "0"),
-                        -1 if iorate is None else iorate),
-                NumItem(energy_label(p["cpu"]), p["cpu"]),
-                QTableWidgetItem(STATES.get(p["state"], p["state"])),
-                QTableWidgetItem(p["cmd"]),
-            ]
-            for c, it in enumerate(cells):
-                if c in (1, 3, 4, 5, 8):
-                    it.setFont(mono)
-                if c in (1, 3, 4, 5):
-                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if c in (3, 6) and p["cpu"] >= 50:
-                    it.setForeground(hot)
-                it.setToolTip(f"{label} · PID {pid}\n{p['cmd']}")
-                self.table.setItem(r, c, it)
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(sort_col, sort_ord)
-        if sel_pid is not None:
-            for r in range(self.table.rowCount()):
-                it = self.table.item(r, 1)
-                if it and it.data(Qt.UserRole) == sel_pid:
-                    self.table.selectRow(r)
-                    break
-        self.table.verticalScrollBar().setValue(vbar)
+        sel_item = None
+        for key, members in groups.items():
+            if len(members) == 1:
+                it = self._proc_item(*members[0], mono, hot)
+                self.tree.addTopLevelItem(it)
+                if sel in (key, f"pid:{members[0][0]}"):
+                    sel_item = it
+                continue
+            members.sort(key=lambda m: m[1]["rss"], reverse=True)
+            first = members[0][1]
+            app = first.get("app")
+            label = app[1] if app else first["name"].split("/")[0]
+            cpu = sum(p["cpu"] for _, p in members)
+            rss = sum(p["rss"] for _, p in members)
+            ios = [p.get("io_rate") for _, p in members if p.get("io_rate") is not None]
+            io = sum(ios) if ios else None
+            users = sorted({p["user"] for _, p in members})
+            g = _SortItem([f"{label}  ({len(members)})", "", ", ".join(users),
+                           f"{cpu:.1f} %", fmt_bytes(rss),
+                           "—" if io is None else (f"{fmt_bytes(io)}/s" if io else "0"),
+                           energy_label(cpu), f"{len(members)} Prozesse", first["cmd"]],
+                          [label.lower(), len(members), ", ".join(users), cpu, rss, -1 if io is None else io,
+                           cpu, "", first["cmd"]])
+            g.setData(0, Qt.UserRole, key)
+            self._style_item(g, label, app, first, mono, hot, cpu)
+            f = g.font(0)
+            f.setWeight(QFont.DemiBold)
+            g.setFont(0, f)
+            for pid, p in members:
+                ch = self._proc_item(pid, p, mono, hot, in_group=True)
+                g.addChild(ch)
+                if sel == f"pid:{pid}":
+                    sel_item = ch
+            self.tree.addTopLevelItem(g)
+            if key in self.expanded:
+                g.setExpanded(True)
+            if sel == key:
+                sel_item = g
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(sort_col, sort_ord)
+        if sel_item is not None:
+            self.tree.setCurrentItem(sel_item)
+        self.tree.blockSignals(False)
+        self.tree.verticalScrollBar().setValue(vbar)
+        self._sel_changed()
+
+    def _style_item(self, it, label, app, p, mono, hot, cpu):
+        if app:
+            ic = themed_icon(app[0])
+            it.setIcon(0, ic if not ic.isNull() else letter_icon(label))
+        elif not p["cmd"].startswith("["):
+            it.setIcon(0, letter_icon(p["name"]))
+        for c in range(len(self.COLS)):
+            if c in (1, 3, 4, 5, 8):
+                it.setFont(c, mono)
+            if c in (1, 3, 4, 5):
+                it.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+            if c in (3, 6) and cpu >= 50:
+                it.setForeground(c, hot)
+
+    def _proc_item(self, pid, p, mono, hot, in_group=False):
+        app = p.get("app")
+        label = p["name"] if in_group or not app else app[1]     # im Ordner: echter Prozessname
+        iorate = p.get("io_rate")
+        it = _SortItem([label, str(pid), p["user"], f"{p['cpu']:.1f} %", fmt_bytes(p["rss"]),
+                        "—" if iorate is None else (f"{fmt_bytes(iorate)}/s" if iorate else "0"),
+                        energy_label(p["cpu"]), STATES.get(p["state"], p["state"]), p["cmd"]],
+                       [label.lower(), pid, p["user"], p["cpu"], p["rss"], -1 if iorate is None else iorate,
+                        p["cpu"], p["state"], p["cmd"]])
+        it.setData(0, Qt.UserRole, f"pid:{pid}")
+        self._style_item(it, label, app, p, mono, hot, p["cpu"])
+        tip = f"{label} · PID {pid}\n{p['cmd']}"
+        for c in range(len(self.COLS)):
+            it.setToolTip(c, tip)
+        return it
+
+    def _selected_key(self):
+        it = self.tree.currentItem()
+        return it.data(0, Qt.UserRole) if it and it.isSelected() else None
+
+    def _selected_pids(self):
+        """(anzeigename, [pids]) der Auswahl – bei einer Gruppe alle Prozesse darin."""
+        it = self.tree.currentItem()
+        if not it or not it.isSelected():
+            return None, []
+        key = it.data(0, Qt.UserRole) or ""
+        if key.startswith("pid:"):
+            pid = int(key[4:])
+            p = self.data.get(pid)
+            return ((p["app"][1] if p.get("app") else p["name"]) if p else "?"), [pid]
+        pids = [int(it.child(i).data(0, Qt.UserRole)[4:]) for i in range(it.childCount())]
+        return it.text(0).rsplit("  (", 1)[0], [pid for pid in pids if pid in self.data]
 
     def _selected_pid(self):
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return None
-        it = self.table.item(rows[0].row(), 1)
-        return it.data(Qt.UserRole) if it else None
+        _, pids = self._selected_pids()
+        return pids[0] if len(pids) == 1 else None
 
     def _sel_changed(self):
-        pid = self._selected_pid()
-        p = self.data.get(pid) if pid is not None else None
+        name, pids = self._selected_pids()
+        ok = bool(pids) and all(pid > 1 for pid in pids)
         for b in (self.b_nice_down, self.b_nice_up, self.b_term, self.b_kill):
-            b.setEnabled(p is not None and pid > 1)
-        if p:
-            nm = p["app"][1] if p.get("app") else p["name"]
-            self.sel_label.setText(f"{nm} · PID {pid} · {p['user']} · nice {p['nice']}")
+            b.setEnabled(ok)
+        self.b_term.setText("Alle beenden" if len(pids) > 1 else "Beenden")
+        self.b_kill.setText("Alle erzwingen" if len(pids) > 1 else "Erzwingen")
+        if len(pids) > 1:
+            rss = sum(self.data[p]["rss"] for p in pids)
+            self.sel_label.setText(f"{name} · {len(pids)} Prozesse · {fmt_bytes(rss)}")
+        elif pids:
+            p = self.data[pids[0]]
+            self.sel_label.setText(f"{name} · PID {pids[0]} · {p['user']} · nice {p['nice']}")
         else:
             self.sel_label.setText("Kein Prozess ausgewählt")
 
@@ -5679,51 +5763,55 @@ class TaskTab(Page):
         return p["uid"] != os.getuid()
 
     def kill(self, sig):
-        pid = self._selected_pid()
-        p = self.data.get(pid)
-        if not p:
+        nm, pids = self._selected_pids()
+        procs = [(pid, self.data[pid]) for pid in pids if pid in self.data]
+        if not procs:
             return
-        nm = p["app"][1] if p.get("app") else p["name"]
         hard = sig == signal.SIGKILL
+        root = [pid for pid, p in procs if self._as_root(p)]
+        what = f"{nm} (PID {procs[0][0]})" if len(procs) == 1 else f"{nm} – alle {len(procs)} Prozesse"
         if not ask_confirm(self, "Prozess erzwingen" if hard else "Prozess beenden",
-                           f"{nm} (PID {pid}) {'sofort stoppen' if hard else 'beenden'}?"
+                           f"{what} {'sofort stoppen' if hard else 'beenden'}?"
                            + ("\n\nUngespeicherte Daten gehen verloren." if hard else "")
-                           + ("\n\nDer Prozess gehört „" + p["user"] + "“ – dafür sind root-Rechte nötig."
-                              if self._as_root(p) else ""),
+                           + ("\n\nEinige gehören anderen Benutzern – dafür sind root-Rechte nötig." if root else ""),
                            "Erzwingen" if hard else "Beenden", danger=hard):
             return
-        if not self._as_root(p):
+        gone = 0
+        for pid, p in procs:
+            if pid in root:
+                continue
             try:
                 os.kill(pid, sig)
-                self.app.set_status(f"Signal an {nm} (PID {pid}) gesendet.")
+                gone += 1
             except ProcessLookupError:
-                self.app.set_status("Prozess existiert nicht mehr.")
+                pass
             except PermissionError:
-                show_error(self, "Keine Berechtigung", "Der Prozess darf nicht beendet werden.")
-            QTimer.singleShot(300, self.tick)
+                root.append(pid)
+        if root:
+            if not self.app.priv.ensure(self):
+                return
+            run_capture_async(["kill", f"-{int(sig)}"] + [str(x) for x in root],
+                              lambda rc, o, e: (self.app.set_status(
+                                  f"{nm}: " + ("beendet." if rc == 0 else f"Fehler: {e.strip()}")), self.tick()),
+                              needs_sudo=True)
             return
-        if not self.app.priv.ensure(self):
-            return
-        run_capture_async(["kill", f"-{int(sig)}", str(pid)],
-                          lambda rc, o, e: (self.app.set_status(
-                              f"{nm} (PID {pid}) " + ("beendet." if rc == 0 else f"– Fehler: {e.strip()}")),
-                              self.tick()), needs_sudo=True)
+        self.app.set_status(f"Signal an {nm} gesendet" + (f" ({gone} Prozesse)." if gone > 1 else "."))
+        QTimer.singleShot(300, self.tick)
 
     def renice(self, delta):
-        pid = self._selected_pid()
-        p = self.data.get(pid)
-        if not p:
+        nm, pids = self._selected_pids()
+        procs = [(pid, self.data[pid]) for pid in pids if pid in self.data]
+        if not procs:
             return
-        new = max(-20, min(19, p["nice"] + delta))
-        needs_root = delta < 0 or self._as_root(p)
+        needs_root = delta < 0 or any(self._as_root(p) for _, p in procs)
         if needs_root and not self.app.priv.ensure(self):
             return
-        run_capture_async(["renice", "-n", str(new), "-p", str(pid)],
+        cmds = [f"renice -n {max(-20, min(19, p['nice'] + delta))} -p {pid}" for pid, p in procs]
+        run_capture_async(["sh", "-c", " ; ".join(cmds)],
                           lambda rc, o, e: (self.app.set_status(
-                              f"Priorität jetzt nice {new}." if rc == 0
+                              f"Priorität von {nm} geändert." if rc == 0
                               else f"renice fehlgeschlagen: {e.strip()}"), self.tick()),
                           needs_sudo=needs_root)
-
 
 # --------------------------------------------------------------------------
 # Modul: Antivirus (ClamAV)
