@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.2"
+APP_VERSION = "1.6.0-beta.3"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -473,6 +473,25 @@ def which(cmd):
     return shutil.which(cmd) is not None
 
 
+try:
+    import ctypes
+    _LIBC = ctypes.CDLL("libc.so.6")
+    _LIBC.mallopt(-8, 2)          # M_ARENA_MAX: höchstens 2 Speicher-Pools, auch bei vielen Worker-Threads
+except Exception:
+    _LIBC = None
+
+
+def trim_memory():
+    """Freigegebenen Speicher ans System zurückgeben (glibc hält ihn sonst oft fest)."""
+    import gc
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+
+
 def valid_pkg_tokens(text):
     tokens = text.split()
     if not tokens:
@@ -499,6 +518,9 @@ class _Invoker(QObject):
     def _run(self, fn):
         try:
             fn()
+        except RuntimeError as e:
+            if "already deleted" not in str(e):     # Tab wurde inzwischen abgebaut → Rückmeldung verwerfen
+                raise
         except Exception:
             import traceback
             tb = traceback.format_exc()
@@ -578,6 +600,81 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z
 PROMPT_END_RE = re.compile(r"(\[[^\[\]]{1,40}\]|[:?]|==>)\s*$")
 
 
+_ACTIVE_RUNS = set()        # laufende ProcessRun-Objekte (ein Tab mit laufendem Befehl wird nie abgebaut)
+_CHILDREN = set()           # alle gestarteten Hintergrundprozesse – werden beim Beenden von Tuxdex mit beendet
+
+
+def track(proc):
+    _CHILDREN.add(proc)
+    return proc
+
+
+def running_children():
+    return [p for p in list(_CHILDREN) if p.poll() is None]
+
+
+def stop_children(timeout=3):
+    """Beim Beenden: alle noch laufenden Kindprozesse (auch sudo …) beenden."""
+    procs = running_children()
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    end = time.time() + timeout
+    for p in procs:
+        try:
+            p.wait(max(0.1, end - time.time()))
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+
+def orphaned_jobs():
+    """Scans/Backups früherer Tuxdex-Sitzungen, die noch laufen: [(pid, name, rss_bytes, sekunden)]."""
+    mine = os.getpid()
+    res = []
+    try:
+        boot = float(_read("/proc/uptime").split()[0])
+        hz = os.sysconf("SC_CLK_TCK")
+    except Exception:
+        boot, hz = 0, 100
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        cmd = _read(f"/proc/{d}/cmdline").replace("\0", " ")
+        name = cmd.split(" ", 1)[0].rsplit("/", 1)[-1]
+        if not ((name == "clamscan" and "tuxdex/quarantine" in cmd) or
+                (name in ("rsync", "tar") and BACKUP_DIRNAME in cmd)):
+            continue
+        # gehört er zu diesem Tuxdex? Eltern-Kette hochlaufen
+        pid, ours = d, False
+        for _ in range(8):
+            st = _read(f"/proc/{pid}/stat")
+            ppid = st.rsplit(")", 1)[-1].split()[1] if ")" in st else "1"
+            if ppid in ("0", "1"):
+                break
+            if int(ppid) == mine:
+                ours = True
+                break
+            pid = ppid
+        if ours:
+            continue
+        rss = 0
+        m = re.search(r"^VmRSS:\s+(\d+)", _read(f"/proc/{d}/status"), re.M)
+        if m:
+            rss = int(m.group(1)) * 1024
+        try:
+            start = int(_read(f"/proc/{d}/stat").rsplit(")", 1)[-1].split()[19]) / hz
+            age = boot - start
+        except Exception:
+            age = 0
+        res.append((int(d), name, rss, age))
+    return res
+
+
 class ProcessRun:
     """Startet einen Prozess und streamt die Ausgabe ins LogView.
 
@@ -599,6 +696,7 @@ class ProcessRun:
         else:
             inner = cmd
         self.full_cmd = (["sudo", "-n"] + inner) if needs_sudo else inner
+        _ACTIVE_RUNS.add(self)
         threading.Thread(target=self._worker, daemon=True).start()
 
     # -- Steuerung (GUI-Thread) --
@@ -627,11 +725,17 @@ class ProcessRun:
 
     # -- Hintergrund --
     def _worker(self):
+        try:
+            self._work()
+        finally:
+            _ACTIVE_RUNS.discard(self)
+
+    def _work(self):
         env = {**os.environ, "COLUMNS": "110", "LINES": "40"}
         try:
-            self.proc = subprocess.Popen(
+            self.proc = track(subprocess.Popen(
                 self.full_cmd, stdin=subprocess.PIPE if self.interactive else subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=self.cwd)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=self.cwd))
         except Exception as e:
             msg = f"Fehler beim Start: {e}\n"
             if self.log is not None:
@@ -1925,12 +2029,13 @@ class SoftwareTab(Page):
                     cell.setFont(mono)
                 if c == 2:
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                if c:
+                if c == 5:
                     cell.setToolTip(it["desc"])
                 self.table.setItem(r, c, cell)
         self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         self._update_sel()
+        QTimer.singleShot(500, trim_memory)
 
     # ---- Auswahl ------------------------------------------------------------
 
@@ -4954,11 +5059,13 @@ def app_for_process(pid, name, cmd):
     cg = _read(f"/proc/{pid}/cgroup")
     mt = re.search(r"app-flatpak-([\w.\-]+?)-\d+\.scope", cg) or \
         re.search(r"app-(?:[\w]+-)?([\w.\-]+?)(?:@[\w]+\.service|-\d+\.scope)", cg)
+    via = None
     if mt:
         key = mt.group(1).lower()
         for k in (key, key.split(".")[-1]):
             if k in m:
-                return m[k]
+                via = m[k]
+                break
     cand = [name.lower()]
     first = cmd.split(" ", 1)[0] if cmd and not cmd.startswith("[") else ""
     if first:
@@ -4970,6 +5077,13 @@ def app_for_process(pid, name, cmd):
     for c in cand:
         if c in m:
             return m[c]
+    if via:
+        # läuft in der Gruppe einer App: eigene Hilfsprozesse zählen zur App, root-Prozesse (sudo clamscan …)
+        # bekommen ihren echten Namen, damit ihr Speicher nicht der App zugerechnet wird
+        uid = re.search(r"^Uid:\s+(\d+)", _read(f"/proc/{pid}/status"), re.M)
+        if uid and int(uid.group(1)) != os.getuid():
+            return via[0], f"{name} · gestartet von {via[1]}"
+        return via
     return None
 
 
@@ -6065,7 +6179,7 @@ class AntivirusTab(Page):
         cmd = sudo + ["find", path] + expr + ["-type", "f", "-printf", "%s\n"]
         n = size = 0
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            proc = track(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
             sc["count_proc"] = proc
             for line in proc.stdout:
                 n += 1
@@ -6086,8 +6200,8 @@ class AntivirusTab(Page):
     def _scan_worker(self, cmd):
         sc = self.sc
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                    errors="replace", bufsize=1)
+            proc = track(subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                    errors="replace", bufsize=1))
         except Exception as e:
             ui(lambda m=str(e): (self.log.append_text(f"error: {m}\n"), self._scan_done(2)))
             return
@@ -8017,7 +8131,7 @@ class BackupJob:
         return ["sudo", "-n"] if self.use_sudo else []
 
     def _popen(self, cmd, **kw):
-        p = subprocess.Popen(cmd, **kw)
+        p = track(subprocess.Popen(cmd, **kw))
         self.procs.append(p)
         return p
 
@@ -10028,20 +10142,24 @@ class MainWindow(QWidget):
         sl.addWidget(Label(f"Version {APP_VERSION}", "StatusText"))
         root.addWidget(sb)
 
-        pages = {
+        # Tabs werden erst beim ersten Öffnen gebaut (spart RAM und Startzeit);
+        # bis dahin steht ein leerer Platzhalter im Stack, damit die Indizes stimmen.
+        self.page_classes = {
             "update": UpdaterTab, "software": SoftwareTab, "flatpak": FlatpakTab, "swap": SwapTab,
             "disks": DisksTab, "storage": StorageTab, "backup": BackupTab, "tasks": TaskTab, "antivirus": AntivirusTab,
             "security": SecurityTab, "users": UsersTab,
         }
         self.tabs = []
         self.pages = {}
+        self._used = {}
+        self._last_tab_key = None
         for i, (key, label, color) in enumerate(MODULES):
-            self.pages[key] = pages[key](self)
-            self.stack.addWidget(self.pages[key])
+            self.stack.addWidget(QWidget())
             t = TabButton(label, color, lambda i=i: self.select(i))
             tb.addWidget(t)
             self.tabs.append(t)
         tb.addStretch(1)
+        self.page("update")          # prüft beim Start auf System-Updates
         self.show_sys_updates(*self._sys_updates)
         self.settings_page = SettingsPage(self)
         self.stack.addWidget(self.settings_page)
@@ -10057,6 +10175,10 @@ class MainWindow(QWidget):
         self._dev_timer = QTimer(self)
         self._dev_timer.timeout.connect(self._check_devices)
         self._dev_timer.start(2000)
+        self._trim_timer = QTimer(self)
+        self._trim_timer.timeout.connect(self._housekeeping)
+        self._trim_timer.start(60000)
+        QTimer.singleShot(4000, self._check_orphans)
 
         if kernel_modules_missing():
             self.set_status("Kernel wurde aktualisiert – bitte neu starten, damit z. B. USB-Sticks erkannt werden.")
@@ -10098,8 +10220,56 @@ class MainWindow(QWidget):
             mounts = ""
         return tuple(blocks), tuple(sizes), mounts
 
+    def page(self, key):
+        """Tab holen – beim ersten Aufruf bauen und den Platzhalter ersetzen."""
+        if key not in self.pages:
+            idx = [m[0] for m in MODULES].index(key)
+            w = self.page_classes[key](self)
+            old = self.stack.widget(idx)
+            cur = self.stack.currentIndex()
+            self.stack.insertWidget(idx, w)
+            self.stack.removeWidget(old)
+            old.deleteLater()
+            self.stack.setCurrentIndex(cur)
+            self.pages[key] = w
+            QTimer.singleShot(3000, trim_memory)
+        return self.pages[key]
+
+    UNLOAD_AFTER = 300          # Sekunden unbenutzt, bevor ein Tab wieder abgebaut wird
+    KEEP_LOADED = {"update"}    # liefert die Update-Anzeige unten rechts
+
+    def _page_busy(self, w):
+        if any(r.log is not None and w.isAncestorOf(r.log) for r in list(_ACTIVE_RUNS)):
+            return True
+        if any(getattr(w, a, False) for a in ("busy", "loading", "cl_running", "checking")):
+            return True
+        if getattr(w, "job", None) is not None or getattr(w, "run", None) is not None:
+            return True
+        sc = getattr(w, "sc", None)
+        return bool(sc) and not sc.get("done", True)
+
+    def _housekeeping(self):
+        """Jede Minute: Tabs abbauen, die lange nicht benutzt wurden und nichts tun – dann Speicher freigeben."""
+        now = time.time()
+        cur = MODULES[self.stack.currentIndex()][0] if self.stack.currentIndex() < len(MODULES) else None
+        for key in list(self.pages):
+            if key == cur or key in self.KEEP_LOADED:
+                continue
+            if now - self._used.get(key, now) < self.UNLOAD_AFTER or self._page_busy(self.pages[key]):
+                continue
+            w = self.pages.pop(key)
+            idx = [m[0] for m in MODULES].index(key)
+            ph = QWidget()
+            cur_idx = self.stack.currentIndex()
+            self.stack.insertWidget(idx, ph)
+            self.stack.removeWidget(w)
+            self.stack.setCurrentIndex(cur_idx)
+            w.deleteLater()
+        QTimer.singleShot(500, trim_memory)
+
     def _check_devices(self):
-        self.pages["disks"]._check_usb()
+        if "disks" in self.pages:
+            self.pages["disks"]._check_usb()
         state = self._device_state()
         if state == self._dev_state:
             return
@@ -10108,8 +10278,9 @@ class MainWindow(QWidget):
         added = [b for b in state[0] if b not in old_blocks and not b.startswith(("loop", "zram", "ram"))]
         if added:
             self.set_status("Neues Laufwerk erkannt: " + ", ".join("/dev/" + b for b in added))
-        self.pages["disks"].refresh()
-        self.pages["storage"].refresh_fs()
+        for key, fn in (("disks", "refresh"), ("storage", "refresh_fs")):
+            if key in self.pages:
+                getattr(self.pages[key], fn)()
 
     def show_sys_updates(self, n, important):
         """Anzahl offener System-Updates: Hinweis unten rechts + Zahl am Tab „Updates“."""
@@ -10134,6 +10305,44 @@ class MainWindow(QWidget):
         else:
             self.upd_hint.hide()
 
+    def closeEvent(self, e):
+        """Beim Schließen laufende Scans/Backups/Befehle nicht als Waisen zurücklassen."""
+        busy = running_children()
+        if busy:
+            names = sorted({os.path.basename(str((p.args if isinstance(p.args, list) else [p.args])
+                                                  [2 if str(p.args[0]).endswith("sudo") else 0]))
+                            for p in busy})
+            if not ask_confirm(self, "Tuxdex beenden", "Es läuft noch: " + ", ".join(names) + ".\n\n"
+                               "Beim Schließen wird das abgebrochen.", "Beenden", danger=True):
+                e.ignore()
+                return
+        stop_children()
+        e.accept()
+
+    def _check_orphans(self):
+        def worker():
+            o = orphaned_jobs()
+            if o:
+                ui(lambda: self._offer_kill(o))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _offer_kill(self, orphans):
+        lines = [f"• {n} (PID {pid}) · {fmt_bytes(rss)} RAM · läuft seit {int(age) // 3600}:{int(age) // 60 % 60:02d} h"
+                 for pid, n, rss, age in orphans]
+        if not ask_confirm(self, "Alter Vorgang läuft noch",
+                           "Aus einer früheren Tuxdex-Sitzung laufen noch im Hintergrund:\n\n" + "\n".join(lines)
+                           + "\n\nSie belegen Speicher und Rechenzeit. Jetzt beenden?", "Beenden", danger=True):
+            return
+        pids = [str(o[0]) for o in orphans]
+        subprocess.run(["kill", "--"] + pids, capture_output=True)
+        time.sleep(0.3)
+        left = [p for p in pids if os.path.exists(f"/proc/{p}")]
+        if left:
+            if not self.priv.ensure(self):
+                return
+            subprocess.run(["sudo", "-n", "kill", "--"] + left, capture_output=True)
+        self.set_status(f"{len(orphans)} alte{'r' if len(orphans) == 1 else ''} Vorgang/Vorgänge beendet.")
+
     def restart(self):
         """Tuxdex neu starten (nach einem Update)."""
         exe = "/usr/bin/tuxdex" if SYSTEM_INSTALL and os.path.exists("/usr/bin/tuxdex") else None
@@ -10157,8 +10366,13 @@ class MainWindow(QWidget):
     def select(self, idx):
         self._last_tab = idx
         self.gear.setChecked(False)
+        new = MODULES[idx][0] not in self.pages
+        if self._last_tab_key and self._last_tab_key != MODULES[idx][0]:
+            self._used[self._last_tab_key] = time.time()      # verlassen → ab jetzt „unbenutzt“
+        self._last_tab_key = MODULES[idx][0]
+        self.page(MODULES[idx][0])
         self.stack.setCurrentIndex(idx)
-        if MODULES[idx][0] == "disks":
+        if MODULES[idx][0] == "disks" and not new:
             self.pages["disks"].refresh()
         for i, t in enumerate(self.tabs):
             t.set_selected(i == idx)
@@ -10199,6 +10413,7 @@ def main():
     install_desktop_entry()
     _INVOKER = _Invoker()
     apply_theme(app)
+    app.aboutToQuit.connect(stop_children)      # auch beim Neustart nach einem Update
     win = MainWindow()
     win.setFocusPolicy(Qt.ClickFocus)
     win.show()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0-beta.3
+- **Weniger RAM**: Tabs werden erst beim ersten Öffnen gebaut und nach 5 Minuten ohne Nutzung wieder abgebaut (nie während ein Scan, Backup oder Befehl läuft). Freigegebener Speicher geht ans System zurück. Start: ~83 statt ~118 MB.
+- **Keine verwaisten Scans mehr**: Beim Schließen oder Neustart beendet Tuxdex alle gestarteten Hintergrundprozesse (vorher Rückfrage, wenn noch etwas läuft). Läuft beim Start noch ein Virenscan oder Backup aus einer früheren Sitzung, bietet Tuxdex an, ihn zu beenden.
+- Taskmanager: root-Prozesse, die Tuxdex gestartet hat, heißen jetzt z. B. „clamscan · gestartet von Tuxdex“ – ihr Speicher wird nicht mehr Tuxdex selbst zugerechnet.
+- Software-Liste: Tooltips nur noch in der Beschreibungsspalte (weniger Speicher bei vielen Paketen).
+
 ## 1.6.0-beta.2
 - Vollversion/Beta als Umschalter mit Versionsanzeige (aus 1.5.6).
 
