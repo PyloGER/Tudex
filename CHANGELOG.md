@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.6
+- Einstellungen → Aktualisierung: Vollversion/Beta als Umschalter statt Aufklappmenü. Daneben steht, welche Version es jeweils gibt und welche installiert ist.
+
 ## 1.5.5
 - Einstellungen → Aktualisierung: Auswahl **Vollversion** oder **Beta** – Beta-Versionen bekommen neue Funktionen früher. Zurück zur Vollversion geht jederzeit.
 
