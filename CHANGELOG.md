@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.2
+- VPN-Erkennung korrigiert: Eine pausierte oder gestoppte Verbindung (z. B. `tailscale down`) gilt nicht mehr als „verbunden“, auch wenn die Schnittstelle noch existiert.
+- Tailscale wird über seinen Status erkannt: ohne Exit-Node als „Tailscale an“ (Internet läuft direkt), mit Exit-Node als aktives VPN.
+- Andere VPNs (WireGuard, OpenVPN …) zählen nur mit Adresse; Split-Tunnel wird erkannt und angezeigt.
+- Der VPN-Status im Tab „Sicherheit“ aktualisiert sich alle 10 Sekunden.
+
 ## 1.5.1
 - Beim Start sucht Tuxdex automatisch nach **System-Updates** (pacman, AUR, Flatpak). Die Anzahl erscheint am Tab „Updates“ und unten rechts – rot, wenn wichtige Updates dabei sind; ein Klick öffnet den Tab.
 - Einstellungen → System-Updates: automatische Prüfung beim Start an/aus. Installiert wird weiterhin nur auf Klick.

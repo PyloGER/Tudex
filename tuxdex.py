@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -4413,6 +4413,61 @@ def net_interfaces():
     return ifaces, gw, dns
 
 
+def internet_route_dev():
+    """Über welche Schnittstelle geht der Internetverkehr gerade? (inkl. Policy-Routing von VPNs)"""
+    try:
+        data = json.loads(subprocess.run(["ip", "-j", "route", "get", "1.1.1.1"], capture_output=True,
+                                         text=True, timeout=5).stdout or "[]")
+        return data[0].get("dev") if data else None
+    except Exception:
+        return None
+
+
+def tailscale_state():
+    """None (nicht installiert) oder dict(running, state, exit_node, ips)"""
+    if not which("tailscale"):
+        return None
+    try:
+        r = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=6)
+        data = json.loads(r.stdout or "{}")
+    except Exception:
+        return {"running": False, "state": "Dienst nicht erreichbar", "exit_node": None, "ips": []}
+    state = data.get("BackendState", "") or "unbekannt"
+    exit_name = None
+    if data.get("ExitNodeStatus"):
+        for p in (data.get("Peer") or {}).values():
+            if p.get("ExitNode"):
+                exit_name = (p.get("HostName") or p.get("DNSName") or "").rstrip(".") or "Exit-Node"
+                break
+        exit_name = exit_name or "Exit-Node"
+    return {"running": state == "Running", "state": state, "exit_node": exit_name,
+            "ips": (data.get("Self") or {}).get("TailscaleIPs") or data.get("TailscaleIPs") or []}
+
+
+TS_STATES = {"Stopped": "gestoppt/pausiert", "NeedsLogin": "nicht angemeldet", "NeedsMachineAuth": "wartet auf Freigabe",
+             "Starting": "startet", "NoState": "aus"}
+
+
+def vpn_state(ifaces=None):
+    """Einheitlicher VPN-Zustand für die Sicherheits-Übersicht.
+    Zählt nur Verbindungen, die wirklich aktiv sind – eine vorhandene, aber pausierte Schnittstelle
+    (z. B. tailscale0 nach „tailscale down“) gilt nicht als verbunden."""
+    if ifaces is None:
+        ifaces = net_interfaces()[0]
+    res = {"mullvad": None, "tailscale": tailscale_state(), "others": [], "route_dev": internet_route_dev()}
+    if which("mullvad"):
+        rc, st = _mullvad(["status"])
+        res["mullvad"] = st
+    for i in ifaces:
+        if i["kind"] != "VPN" or i["name"].startswith("tailscale"):
+            continue
+        if i["name"].startswith(("wg0-mullvad", "mullvad")) and res["mullvad"] is not None:
+            continue
+        if i["state"] in ("UP", "UNKNOWN") and (i["ipv4"] or i["ipv6"]):
+            res["others"].append(i["name"])
+    return res
+
+
 def public_ip_info():
     """Fragt am.i.mullvad.net nach öffentlicher IP, Ort, Anbieter und ob Mullvad genutzt wird."""
     import urllib.request
@@ -6317,6 +6372,9 @@ class SecurityTab(Page):
         self.lay.addWidget(out)
 
         QTimer.singleShot(400, self.refresh_all)
+        self._vpn_timer = QTimer(self)
+        self._vpn_timer.timeout.connect(self._poll_vpn)
+        self._vpn_timer.start(10000)
 
     # ======================================================================
     # Übersicht
@@ -6332,7 +6390,7 @@ class SecurityTab(Page):
             r["mv_status"] = _mullvad(["status"])[1] if r["mullvad"] else ""
             ifaces, gw, dns = net_interfaces()
             r["ifaces"], r["gw"], r["dns"] = ifaces, gw, dns
-            r["vpn_ifaces"] = [i["name"] for i in ifaces if i["kind"] == "VPN" and i["state"] in ("UP", "UNKNOWN")]
+            r["vpn"] = vpn_state(ifaces)
             # Firewall
             r["fw"] = svc_active("ufw") or svc_active("firewalld") or svc_active("nftables") \
                 or svc_active("iptables")
@@ -6379,20 +6437,7 @@ class SecurityTab(Page):
     def _show(self, r):
         warn = 0
         # VPN
-        st = r["mv_status"].splitlines()[0].strip() if r["mv_status"] else ""
-        if st.lower().startswith("connected"):
-            self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(r["mv_status"]))
-        elif r["vpn_ifaces"]:
-            self.rows["vpn"].set("ok", "Aktiv", "VPN-Schnittstelle aktiv: " + ", ".join(r["vpn_ifaces"]))
-        else:
-            if r["mullvad"]:
-                warn += 1
-                self.rows["vpn"].set("warn", "Aus", "Mullvad ist nicht verbunden – Anbieter und Webseiten sehen "
-                                     "deine echte IP.", "Verbinden",
-                                     lambda: self._mv_action(["connect"], wait=True))
-            else:
-                self.rows["vpn"].set("off", "Kein VPN", "Es ist kein VPN aktiv. Optional – Tuxdex funktioniert auch "
-                                     "ohne VPN.")
+        warn += self._show_vpn(r["vpn"])
         # Firewall
         if r["fw"]:
             self.rows["fw"].set("ok", "Aktiv", f"{r['fw_name']} läuft"
@@ -6486,6 +6531,53 @@ class SecurityTab(Page):
 
         self.badge.set("ok" if warn == 0 else ("warn" if warn <= 2 else "danger"),
                        "Alles in Ordnung" if warn == 0 else f"{warn} Hinweis{'e' if warn != 1 else ''}")
+
+    def _show_vpn(self, v):
+        """Setzt die VPN-Zeile; gibt 1 zurück, wenn ein Hinweis gezählt werden soll."""
+        mv = v.get("mullvad")
+        mv_first = mv.splitlines()[0].strip().lower() if mv else ""
+        ts = v.get("tailscale")
+        route = v.get("route_dev") or "—"
+        if mv_first.startswith("connected"):
+            self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(mv))
+            return 0
+        if ts and ts["running"] and ts["exit_node"]:
+            self.rows["vpn"].set("ok", "Aktiv", f"Tailscale ist verbunden – dein Internetverkehr läuft über den "
+                                 f"Exit-Node „{ts['exit_node']}“.")
+            return 0
+        if v["others"]:
+            full = route in v["others"]
+            self.rows["vpn"].set("ok" if full else "info", "Aktiv" if full else "Verbunden",
+                                 f"VPN-Verbindung aktiv: {', '.join(v['others'])}. " +
+                                 ("Der Internetverkehr läuft darüber." if full else
+                                  f"Der Internetverkehr läuft aber direkt über {route} (Split-Tunnel)."))
+            return 0
+        if ts and ts["running"]:
+            self.rows["vpn"].set("info", "Tailscale an", "Tailscale ist verbunden (privates Netz zwischen deinen "
+                                 "Geräten). Ohne Exit-Node läuft der Internetverkehr direkt, nicht über ein VPN.")
+            return 0
+        extra = ""
+        if ts is not None and not ts["running"]:
+            extra = f" Tailscale ist {TS_STATES.get(ts['state'], ts['state'])}."
+        if mv is not None:
+            self.rows["vpn"].set("warn", "Aus", "Mullvad ist nicht verbunden – Anbieter und Webseiten sehen "
+                                 "deine echte IP." + extra, "Verbinden",
+                                 lambda: self._mv_action(["connect"], wait=True))
+            return 1
+        self.rows["vpn"].set("off", "Kein VPN", "Es ist kein VPN aktiv." + extra +
+                             " Optional – Tuxdex funktioniert auch ohne VPN.")
+        return 0
+
+    def _poll_vpn(self):
+        """Alle 10 s: VPN-Zeile auffrischen (z. B. nach „tailscale down“), solange der Tab sichtbar ist."""
+        if not self.isVisible() or getattr(self, "_vpn_busy", False):
+            return
+        self._vpn_busy = True
+
+        def worker():
+            v = vpn_state()
+            ui(lambda: (self._show_vpn(v), setattr(self, "_vpn_busy", False)))
+        threading.Thread(target=worker, daemon=True).start()
 
     def stop_ssh(self):
         if not ask_confirm(self, "SSH stoppen", "SSH-Server stoppen und nicht mehr automatisch starten?\n"
