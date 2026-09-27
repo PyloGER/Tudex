@@ -130,7 +130,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -6070,6 +6070,63 @@ def luks_state():
     return root_enc, luks
 
 
+def microcode_state():
+    """(paketname, installiert) – (None, None) in einer VM oder bei unbekannter CPU."""
+    info = _read("/proc/cpuinfo")
+    if re.search(r"^flags\s*:.*\bhypervisor\b", info, re.M):
+        return None, None
+    pkg = "intel-ucode" if "GenuineIntel" in info else ("amd-ucode" if "AuthenticAMD" in info else None)
+    if not pkg:
+        return None, None
+    try:
+        ok = subprocess.run(["pacman", "-Q", pkg], capture_output=True, timeout=5).returncode == 0
+    except Exception:
+        ok = False
+    return pkg, ok
+
+
+def _dev_encrypted(dev):
+    """True, wenn das Blockgerät (oder ein Elterngerät) ein dm-crypt-Container ist."""
+    try:
+        r = subprocess.run(["lsblk", "-s", "-n", "-o", "TYPE", dev], capture_output=True, text=True, timeout=5)
+        return "crypt" in r.stdout.split()
+    except Exception:
+        return False
+
+
+def swap_state():
+    """[(pfad, verschlüsselt)] aller aktiven Swap-Bereiche. zram liegt im RAM und gilt als sicher."""
+    res = []
+    for line in _read("/proc/swaps").splitlines()[1:]:
+        f = line.split()
+        if len(f) < 2:
+            continue
+        path, kind = f[0].replace("\\040", " "), f[1]
+        if "/zram" in path:
+            res.append((path, True))
+            continue
+        dev = path
+        if kind == "file":
+            try:
+                dev = subprocess.run(["findmnt", "-n", "-o", "SOURCE", "--target", path], capture_output=True,
+                                     text=True, timeout=5).stdout.strip().split("[")[0]
+            except Exception:
+                dev = ""
+        res.append((path, bool(dev) and _dev_encrypted(dev)))
+    return res
+
+
+# Kernel-Schutz: nur Werte, die im Alltag nichts kaputt machen
+HARDEN_SYSCTL = {"kernel.kexec_load_disabled": "1", "kernel.sysrq": "0"}
+HARDEN_FILE = "/etc/sysctl.d/90-tuxdex-hardening.conf"
+
+
+def sysctl_missing():
+    """Namen der HARDEN_SYSCTL-Werte, die aktuell nicht gesetzt sind."""
+    return [k for k, v in HARDEN_SYSCTL.items()
+            if _read("/proc/sys/" + k.replace(".", "/")).strip() != v]
+
+
 def listening_ports():
     """[(proto, adresse, port, prozess)] – nur Dienste, die von außen erreichbar sind."""
     out = []
@@ -6181,7 +6238,8 @@ class SecurityTab(Page):
         ov = Panel("Übersicht")
         self.rows = {}
         for key, title in (("vpn", "VPN"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
-                           ("sb", "Secure Boot"), ("upd", "System-Updates"), ("av", "Antivirus"),
+                           ("sb", "Secure Boot"), ("ucode", "CPU-Microcode"), ("swapenc", "Swap-Verschlüsselung"),
+                           ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("av", "Antivirus"),
                            ("ports", "Offene Netzwerk-Ports"), ("ssh", "SSH-Server")):
             r = CheckRow(title)
             self.rows[key] = r
@@ -6398,6 +6456,9 @@ class SecurityTab(Page):
             r["fw_enabled"] = any(svc_enabled(n) for n in ("ufw", "firewalld", "nftables", "iptables"))
             r["luks"] = luks_state()
             r["sb"] = secure_boot_state()
+            r["ucode"] = microcode_state()
+            r["swap"] = swap_state()
+            r["sysctl"] = sysctl_missing()
             # Updates
             last = None
             try:
@@ -6468,6 +6529,41 @@ class SecurityTab(Page):
         else:
             self.rows["sb"].set("off", "Aus", "Optional: mit sbctl eigene Schlüssel einrichten "
                                               "(schützt vor manipulierten Bootloadern).")
+        # Microcode
+        pkg, ok = r["ucode"]
+        if pkg is None:
+            self.rows["ucode"].set("off", "Nicht nötig", "Virtuelle Maschine oder unbekannte CPU – der Host lädt "
+                                                         "den Microcode.")
+        elif ok:
+            self.rows["ucode"].set("ok", "Installiert", f"{pkg} schließt CPU-Sicherheitslücken (z. B. Spectre).")
+        else:
+            warn += 1
+            self.rows["ucode"].set("warn", "Fehlt", f"{pkg} fehlt – bekannte CPU-Sicherheitslücken bleiben offen. "
+                                   "Wirkt nach dem nächsten Neustart.", "Installieren", self.install_ucode)
+        # Swap
+        plain = [p for p, enc in r["swap"] if not enc]
+        if not r["swap"]:
+            self.rows["swapenc"].set("ok", "Kein Swap", "Es wird kein Swap genutzt.")
+        elif not plain:
+            self.rows["swapenc"].set("ok", "Geschützt", "Swap liegt verschlüsselt oder im RAM (zram): "
+                                     + ", ".join(p for p, _ in r["swap"]))
+        else:
+            warn += 1
+            self.rows["swapenc"].set("warn", "Unverschlüsselt",
+                                     f"{', '.join(plain)} ist unverschlüsselt – Passwörter und Schlüssel aus dem "
+                                     "RAM können dort lesbar auf der Platte landen. Abhilfe: Swap-Partition "
+                                     "entfernen und ein Swapfile auf der verschlüsselten Systempartition anlegen.",
+                                     "Zum Swap", lambda: self.app.select([m[0] for m in MODULES].index("swap")))
+        # Kernel-Schutz
+        miss = r["sysctl"]
+        if not miss:
+            self.rows["kernel"].set("ok", "Aktiv", "Kernel-Austausch im laufenden Betrieb (kexec) und "
+                                                   "SysRq-Tastenkürzel sind gesperrt.")
+        else:
+            warn += 1
+            self.rows["kernel"].set("warn", "Offen", "Nicht gesetzt: " + ", ".join(
+                f"{k}={HARDEN_SYSCTL[k]}" for k in miss) + ". Sperrt den Kernel-Austausch im laufenden Betrieb "
+                "(kexec) und SysRq-Tastenkürzel – im Alltag ohne Nachteile.", "Aktivieren", self.harden_kernel)
         # Updates
         last = r["last_upgrade"]
         imp = [u for u in r["pending"] if u.get("kind")]
@@ -6584,6 +6680,22 @@ class SecurityTab(Page):
                            "Laufende Fernverbindungen werden getrennt.", "Stoppen", danger=True):
             return
         self._root(["systemctl", "disable", "--now", "sshd"])
+
+    def install_ucode(self):
+        pkg, ok = microcode_state()
+        if not pkg or ok:
+            return
+        self._root(["pacman", "-S", "--needed", pkg], interactive=True)
+
+    def harden_kernel(self):
+        if not ask_confirm(self, "Kernel-Schutz", "Kernel-Austausch im laufenden Betrieb (kexec) und "
+                           "SysRq-Tastenkürzel sperren?\n\nWird in " + HARDEN_FILE + " gespeichert und gilt "
+                           "sofort und nach jedem Neustart.", "Aktivieren"):
+            return
+        body = "".join(f"{k} = {v}\n" for k, v in HARDEN_SYSCTL.items())
+        script = (f"printf %s {shlex.quote('# Tuxdex: Kernel-Schutz' + chr(10) + body)} > {HARDEN_FILE} && "
+                  f"sysctl -p {HARDEN_FILE}")
+        self._root(["sh", "-c", script])
 
     def check_public_ip(self):
         self.ip_pub.setText("Öffentliche IP wird geprüft …")
