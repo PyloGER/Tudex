@@ -3660,11 +3660,14 @@ class BarList(QWidget):
         p.end()
 
 
-def _du_size(path, use_sudo):
+def _du_size(path, use_sudo, timeout=120):
+    """Belegter Platz in Bytes; None bei Zeitüberschreitung."""
     cmd = (["sudo", "-n"] if use_sudo else []) + ["du", "-sxB1", path]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return int(r.stdout.split()[0]) if r.stdout.strip() else 0
+    except subprocess.TimeoutExpired:
+        return None
     except Exception:
         return 0
 
@@ -3727,8 +3730,30 @@ class StorageTab(Page):
                                  "Die größten 25 Einträge werden gezeigt.", "Hint", wrap=True))
         self.lay.addWidget(ana)
 
-        cl = Panel("Typische Platzfresser & Aufräumen",
-                   [Button("Größen ermitteln", "ghost", self.scan_cleanup)])
+        self.b_measure = Button("Größen ermitteln", "ghost", self.scan_cleanup)
+        cl = Panel("Typische Platzfresser & Aufräumen", [self.b_measure])
+        # Status wie beim Virenscan: läuft/fertig · was gerade gemessen wird · Fortschritt
+        self.cl_status = QWidget()
+        stl = QVBoxLayout(self.cl_status)
+        stl.setContentsMargins(0, 0, 0, 6)
+        stl.setSpacing(6)
+        srow = QHBoxLayout()
+        srow.setSpacing(12)
+        self.cl_badge = StatusBadge("off", "Nicht aktiv")
+        srow.addWidget(self.cl_badge)
+        self.cl_time = Label("", "Value")
+        srow.addWidget(self.cl_time)
+        srow.addStretch(1)
+        stl.addLayout(srow)
+        self.cl_bar = ProgressBar()
+        stl.addWidget(self.cl_bar)
+        self.cl_info = Label("", "Hint", wrap=True)
+        stl.addWidget(self.cl_info)
+        self.cl_status.hide()
+        cl.body.addWidget(self.cl_status)
+        self.cl_running = False
+        self.cl_timer = QTimer(self)
+        self.cl_timer.timeout.connect(self._cl_tick)
         self.cl_grid = QGridLayout()
         self.cl_grid.setHorizontalSpacing(16)
         self.cl_grid.setVerticalSpacing(10)
@@ -3886,41 +3911,87 @@ class StorageTab(Page):
                 self.cl_grid.addWidget(b, i, 2)
 
     def scan_cleanup(self):
+        if self.cl_running:
+            return
         use_sudo = self.app.priv.is_authenticated_nonblocking()
         for c in self.cleanup:
             c["size_lbl"].setText("…")
+        self.cl_running = True
+        self.cl_started = time.time()
+        self.cl_active = {}                # key -> Name, solange gemessen wird
+        self.cl_done = 0
+        self.cl_sizes = {}
+        self.b_measure.setEnabled(False)
+        self.b_measure.setText("Ermittle …")
+        self.cl_status.show()
+        self.cl_badge.set("ok", "Läuft")
+        self._cl_tick()
+        self.cl_timer.start(500)
+
+        def measure(c):
+            k = c["key"]
+            if k == "orphans":
+                r = subprocess.run(["pacman", "-Qdtq"], capture_output=True, text=True, timeout=60) \
+                    if which("pacman") else None
+                pkgs = r.stdout.split() if r and r.returncode == 0 else []
+                size = 0
+                if pkgs:
+                    qi = subprocess.run(["pacman", "-Qi"] + pkgs, capture_output=True, text=True, timeout=60,
+                                        env={**os.environ, "LC_ALL": "C"}).stdout
+                    for m in re.finditer(r"^Installed Size\s*:\s*([\d.,]+)\s*(\S+)", qi, re.M):
+                        size += float(m.group(1).replace(",", ".")) * _SIZE_UNITS.get(m.group(2), 1)
+                return size, (f"{len(pkgs)} Pakete · {fmt_bytes(size)}" if pkgs else "keine")
+            paths = ["/var/lib/flatpak", os.path.expanduser("~/.local/share/flatpak")] if k == "flatpak" \
+                else [c["path"]]
+            paths = [p for p in paths if os.path.exists(p)]
+            if not paths:
+                return 0, "—" if k == "flatpak" else "nicht vorhanden"
+            sizes = [_du_size(p, use_sudo) for p in paths]
+            if any(x is None for x in sizes):
+                return 0, "zu viele Dateien"
+            return sum(sizes), fmt_bytes(sum(sizes))
+
+        def job(c):
+            ui(lambda: self.cl_active.__setitem__(c["key"], c["name"]))
+            try:
+                res = measure(c)
+            except Exception:
+                res = (0, "Fehler")
+            ui(lambda: self._cl_result(c, *res))
 
         def worker():
-            res = {}
-            for c in self.cleanup:
-                k = c["key"]
-                if k == "orphans":
-                    r = subprocess.run(["pacman", "-Qdtq"], capture_output=True, text=True) \
-                        if which("pacman") else None
-                    pkgs = r.stdout.split() if r and r.returncode == 0 else []
-                    size = 0
-                    if pkgs:
-                        qi = subprocess.run(["pacman", "-Qi"] + pkgs, capture_output=True, text=True,
-                                            env={**os.environ, "LC_ALL": "C"}).stdout
-                        for m in re.finditer(r"^Installed Size\s*:\s*([\d.,]+)\s*(\S+)", qi, re.M):
-                            size += float(m.group(1).replace(",", ".")) * _SIZE_UNITS.get(m.group(2), 1)
-                    res[k] = (size, f"{len(pkgs)} Pakete · {fmt_bytes(size)}" if pkgs else "keine")
-                elif k == "flatpak":
-                    size = sum(_du_size(p, use_sudo) for p in ("/var/lib/flatpak",
-                               os.path.expanduser("~/.local/share/flatpak")) if os.path.exists(p))
-                    res[k] = (size, fmt_bytes(size) if size else "—")
-                else:
-                    p = c["path"]
-                    size = _du_size(p, use_sudo) if os.path.exists(p) else 0
-                    res[k] = (size, fmt_bytes(size) if os.path.exists(p) else "nicht vorhanden")
-            ui(lambda: self._show_cleanup(res))
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(job, self.cleanup))
+            ui(self._cl_finished)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_cleanup(self, res):
-        for c in self.cleanup:
-            size, txt = res.get(c["key"], (0, "—"))
-            c["size_lbl"].setText(txt)
+    def _cl_result(self, c, size, txt):
+        c["size_lbl"].setText(txt)
+        self.cl_active.pop(c["key"], None)
+        self.cl_sizes[c["key"]] = size
+        self.cl_done += 1
+        self._cl_tick()
+
+    def _cl_tick(self):
+        el = int(time.time() - self.cl_started)
+        n = len(self.cleanup)
+        self.cl_time.setText(f"{self.cl_done} / {n}  ·  {el // 60}:{el % 60:02d}")
+        self.cl_bar.set(self.cl_done / n * 100, f"{self.cl_done / n * 100:.0f} %")
+        if self.cl_running:
+            self.cl_info.setText("Misst gerade: " + (", ".join(self.cl_active.values()) or "…")
+                                 + " – große Ordner mit vielen Dateien brauchen etwas.")
+
+    def _cl_finished(self):
+        self.cl_running = False
+        self.cl_timer.stop()
+        self._cl_tick()
+        self.b_measure.setEnabled(True)
+        self.b_measure.setText("Größen ermitteln")
+        el = int(time.time() - self.cl_started)
+        self.cl_badge.set("ok", "Fertig")
+        self.cl_info.setText(f"Alle {len(self.cleanup)} Bereiche gemessen · Dauer {el // 60}:{el % 60:02d}")
 
     def clean(self, key):
         home = os.path.expanduser("~")
@@ -4521,6 +4592,7 @@ def vpn_state(ifaces=None):
     if which("mullvad"):
         rc, st = _mullvad(["status"])
         res["mullvad"] = st
+        res["mv_lockdown"] = _on(_mullvad(["lockdown-mode", "get"])[1], "block traffic", "lockdown")
     for i in ifaces:
         if i["kind"] != "VPN" or i["name"].startswith("tailscale"):
             continue
@@ -5692,7 +5764,7 @@ class AntivirusTab(Page):
         self.scan_started = time.time()
         self.sc = {"files": 0, "bytes": 0, "total_files": None, "total_bytes": None, "counting": True,
                    "last_line": time.time(), "last_file": "", "warnings": 0, "proc": None, "count_proc": None,
-                   "cancelled": False, "done": False}
+                   "cancelled": False, "done": False, "first_at": None}
         self.b_scan.hide()
         self.b_stop.show()
         self.scan_box.show()
@@ -5764,6 +5836,8 @@ class AntivirusTab(Page):
                     continue          # wird übersprungen, zählt nicht als Datei (wie bei find -type f)
                 sc["files"] += 1
                 sc["last_file"] = p
+                if sc["first_at"] is None:
+                    sc["first_at"] = time.time()     # ab hier wird gescannt (vorher: Signaturen laden)
                 if res == "OK":
                     try:
                         sc["bytes"] += os.lstat(p).st_size
@@ -5803,12 +5877,7 @@ class AntivirusTab(Page):
         self.st_rate.setText(f"{rate:.0f} Dateien/s · {fmt_bytes(brate)}/s")
         self.st_found.setText(str(len(self.found)))
         self.st_found.setStyleSheet(f"color: {COLORS['danger']};" if self.found else "")
-        if tf and rate > 0 and files < tf:
-            rest = int((tf - files) / rate)
-            self.scan_eta.setText(f"Restzeit ca. {rest // 3600}:{rest // 60 % 60:02d} h" if rest >= 3600
-                                  else (f"Restzeit ca. {rest // 60} Min" if rest >= 60 else "Restzeit unter 1 Min"))
-        else:
-            self.scan_eta.setText("")
+        self.scan_eta.setText(self._eta_text(sc, now))
         quiet = int(now - sc["last_line"])
         last = sc["last_file"]
         proc = sc["proc"]
@@ -5825,6 +5894,32 @@ class AntivirusTab(Page):
                                       + " – Abbrechen und den Ordner ausschließen oder erneut versuchen.")
         elif proc is None:
             self.scan_state.set("info", "Startet …")
+
+    @staticmethod
+    def _dur(sec):
+        sec = int(sec)
+        if sec >= 3600:
+            return f"{sec // 3600}:{sec // 60 % 60:02d} h"
+        return f"{sec // 60} Min" if sec >= 60 else "unter 1 Min"
+
+    def _eta_text(self, sc, now):
+        """Hochrechnung: Tempo seit der ersten gescannten Datei (ohne die Ladezeit der Signaturen)."""
+        first, files = sc["first_at"], sc["files"]
+        total = sc["total_files"] or sc.get("count_files")
+        if not first or not total or now - first < 15 or files < 50:
+            return "Hochrechnung läuft …"
+        rate = files / (now - first)
+        if files >= total:
+            return ""
+        rest = (total - files) / rate
+        end = datetime.fromtimestamp(now + rest)
+        day = "" if end.date() == datetime.now().date() else \
+            ("morgen " if (end.date() - datetime.now().date()).days == 1 else end.strftime("%d.%m. "))
+        whole = (now - self.scan_started) + rest
+        if sc["total_files"]:
+            return (f"Restzeit ca. {self._dur(rest)} · fertig ca. {day}{end:%H:%M} Uhr · "
+                    f"gesamt ca. {self._dur(whole)}")
+        return f"Restzeit mind. {self._dur(rest)} (Dateien werden noch gezählt)"
 
     def _scan_line(self, line):
         line = line.strip()
@@ -6190,6 +6285,24 @@ def sysctl_missing():
             if _read("/proc/sys/" + k.replace(".", "/")).strip() != v]
 
 
+def arch_audit_state():
+    """None (nicht installiert), "error" oder [(paket, behebbar, zeile)] betroffener Pakete."""
+    if not which("arch-audit"):
+        return None
+    try:
+        r = subprocess.run(["arch-audit"], capture_output=True, text=True, timeout=30)
+    except Exception:
+        return "error"
+    if r.returncode != 0 and not r.stdout.strip():
+        return "error"
+    res = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"Package (\S+) is affected by", line)
+        if m:
+            res.append((m.group(1), "Update to" in line, line))
+    return res
+
+
 def listening_ports():
     """[(proto, adresse, port, prozess)] – nur Dienste, die von außen erreichbar sind."""
     out = []
@@ -6302,7 +6415,7 @@ class SecurityTab(Page):
         self.rows = {}
         for key, title in (("vpn", "VPN"), ("dns", "DNS"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
                            ("sb", "Secure Boot"), ("ucode", "CPU-Microcode"), ("swapenc", "Swap-Verschlüsselung"),
-                           ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("av", "Antivirus"),
+                           ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("cve", "Bekannte Sicherheitslücken"), ("av", "Antivirus"),
                            ("ports", "Offene Netzwerk-Ports"), ("ssh", "SSH-Server")):
             r = CheckRow(title)
             self.rows[key] = r
@@ -6523,6 +6636,7 @@ class SecurityTab(Page):
             r["ucode"] = microcode_state()
             r["swap"] = swap_state()
             r["sysctl"] = sysctl_missing()
+            r["cve"] = arch_audit_state()
             # Updates
             last = None
             try:
@@ -6657,6 +6771,33 @@ class SecurityTab(Page):
                                      "Zu den Updates", goto_upd)
             else:
                 self.rows["upd"].set("ok", "Aktuell", txt + ".")
+        # arch-audit
+        cve = r["cve"]
+        if cve is None:
+            self.rows["cve"].set("off", "Nicht installiert", "Optional: arch-audit gleicht die installierten Pakete "
+                                 "mit der Arch-Sicherheitsdatenbank ab (security.archlinux.org).", "Installieren",
+                                 lambda: self._root(["pacman", "-S", "--needed", "arch-audit"], interactive=True))
+        elif cve == "error":
+            self.rows["cve"].set("off", "Nicht prüfbar", "arch-audit konnte die Sicherheitsdatenbank nicht abrufen "
+                                                          "(keine Internetverbindung?).")
+        else:
+            fix = [c[0] for c in cve if c[1]]
+            nofix = [c[0] for c in cve if not c[1]]
+
+            def names(lst):
+                return ", ".join(lst[:8]) + (" …" if len(lst) > 8 else "")
+            if fix:
+                warn += 1
+                self.rows["cve"].set("warn", f"{len(fix)} behebbar",
+                                     f"Updates schließen Lücken in: {names(fix)}."
+                                     + (f" Noch ohne Fix: {names(nofix)}." if nofix else ""), "Zu den Updates",
+                                     lambda: self.app.select([m[0] for m in MODULES].index("update")))
+            elif nofix:
+                self.rows["cve"].set("info", f"{len(nofix)} ohne Fix",
+                                     f"Bekannte Lücken ohne verfügbares Update: {names(nofix)}. "
+                                     "Nichts zu tun – der Fix kommt mit einem späteren Update.")
+            else:
+                self.rows["cve"].set("ok", "Keine bekannt", "Kein installiertes Paket hat eine bekannte Lücke.")
         # Antivirus
         av = r["av"]
         goto_av = lambda: self.app.select([m[0] for m in MODULES].index("antivirus"))
@@ -6711,7 +6852,13 @@ class SecurityTab(Page):
         ts = v.get("tailscale")
         route = v.get("route_dev") or "—"
         if mv_first.startswith("connected"):
-            self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(mv))
+            if v.get("mv_lockdown"):
+                self.rows["vpn"].set("ok", "Aktiv", "Mullvad ist verbunden, Kill-Switch an. " + self._mv_location(mv))
+                return 0
+            self.rows["vpn"].set("info", "Aktiv", "Mullvad ist verbunden. " + self._mv_location(mv)
+                                 + " Tipp: Kill-Switch (Lockdown) einschalten – dann geht auch bei einem "
+                                 "Verbindungsabbruch nichts am Tunnel vorbei.", "Kill-Switch an",
+                                 lambda: self._toggle_lockdown(True))
             return 0
         if ts and ts["running"] and ts["exit_node"]:
             self.rows["vpn"].set("ok", "Aktiv", f"Tailscale ist verbunden – dein Internetverkehr läuft über den "
