@@ -383,7 +383,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -8603,7 +8603,10 @@ def _conf_value(paths, section, key):
     files = []
     for p in paths:
         if os.path.isdir(p):
-            files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".conf"))
+            try:
+                files += sorted(os.path.join(p, f) for f in os.listdir(p) if f.endswith(".conf"))
+            except OSError:
+                pass        # z. B. Ordner ohne Leserecht (restriktive umask beim Anlegen)
         elif os.path.exists(p):
             files.append(p)
     for f in files:
@@ -9845,8 +9848,9 @@ class SecurityTab(Page):
                            "Begrenzen"):
             return
         body = "# Tuxdex\n[Journal]\nSystemMaxUse=500M\nMaxRetentionSec=1month\n"
-        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(JOURNALD_FILE)} && printf %s {shlex.quote(body)} > "
-                    f"{JOURNALD_FILE} && systemctl restart systemd-journald && journalctl --vacuum-size=500M "
+        self._root(["sh", "-c", f"umask 022 && mkdir -p {os.path.dirname(JOURNALD_FILE)} && chmod 755 {os.path.dirname(JOURNALD_FILE)} && "
+                    f"printf %s {shlex.quote(body)} > {JOURNALD_FILE} && chmod 644 {JOURNALD_FILE} && "
+                    f"systemctl restart systemd-journald && journalctl --vacuum-size=500M "
                     "--vacuum-time=1month"])
 
     def cl_coredump(self):
@@ -9855,8 +9859,9 @@ class SecurityTab(Page):
                            f"{COREDUMP_FILE} gespeichert.", "Abschalten"):
             return
         body = "# Tuxdex\n[Coredump]\nStorage=none\nProcessSizeMax=0\n"
-        self._root(["sh", "-c", f"mkdir -p {os.path.dirname(COREDUMP_FILE)} && printf %s {shlex.quote(body)} > "
-                    f"{COREDUMP_FILE} && rm -f /var/lib/systemd/coredump/* && systemctl daemon-reload"])
+        self._root(["sh", "-c", f"umask 022 && mkdir -p {os.path.dirname(COREDUMP_FILE)} && chmod 755 {os.path.dirname(COREDUMP_FILE)} && "
+                    f"printf %s {shlex.quote(body)} > {COREDUMP_FILE} && chmod 644 {COREDUMP_FILE} && "
+                    f"rm -f /var/lib/systemd/coredump/* && systemctl daemon-reload"])
 
     def cl_telemetry(self, items):
         names = ", ".join(n for n, _ in items)
@@ -9889,7 +9894,7 @@ class SecurityTab(Page):
         if not ask_confirm(self, "I/O-Scheduler", "Empfohlene Scheduler setzen (NVMe: none, SSD: mq-deadline, "
                            f"Festplatte: bfq)?\n\nWird als udev-Regel in {IOSCHED_FILE} gespeichert.", "Setzen"):
             return
-        self._root(["sh", "-c", f"printf %s {shlex.quote(rules)} > {IOSCHED_FILE} && modprobe -q bfq; "
+        self._root(["sh", "-c", f"umask 022 && printf %s {shlex.quote(rules)} > {IOSCHED_FILE} && chmod 644 {IOSCHED_FILE} && modprobe -q bfq; "
                     "udevadm control --reload && udevadm trigger --subsystem-match=block --action=change"])
 
     def cl_stale_mods(self, mods):
@@ -12517,8 +12522,8 @@ class SettingsPage(Page):
         st["lang"] = code
         save_settings(st)
         self.update_panel.settings["lang"] = code
-        if code != LANG and ask_confirm(self, "Sprache · Language", "Tuxdex jetzt neu starten, damit die Sprache "
-                                        "wechselt?\n\nRestart Tuxdex now to switch the language?", "Neu starten"):
+        if code != LANG and ask_confirm(self, "Sprache", "Tuxdex jetzt neu starten, damit die Sprache wechselt?",
+                                        "Neu starten"):
             self.app.restart()
 
     def _sys_changed(self, on):
@@ -14136,7 +14141,9 @@ EN = {
     'Spiegel': 'Mirror',
     'Spiegelserver': 'Mirrors',
     'Spiegelserver (Mirrors)': 'Mirrors',
+    'Sprache': 'Language',
     'Sprache · Language': 'Language',
+    'Tuxdex jetzt neu starten, damit die Sprache wechselt?': 'Restart Tuxdex now to switch the language?',
     'Später': 'Later',
     'SSH stoppen': 'Stop SSH',
     'SSH-Schlüssel': 'SSH keys',
