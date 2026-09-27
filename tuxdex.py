@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.7"
+APP_VERSION = "1.6.0-beta.8"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -8262,7 +8262,20 @@ class SecurityTab(Page):
         acc = QHBoxLayout()
         acc.setSpacing(8)
         self.acc_info = Label("", "Value", wrap=True)
-        acc.addLayout(Field("Konto", self.acc_info), 1)
+        self.acc_num = ""          # volle Kontonummer, nur auf Wunsch sichtbar
+        self.acc_rest = ""
+        self.b_eye = Button("", "icon", self._toggle_acc, "Kontonummer anzeigen")
+        self.b_eye.setCheckable(True)
+        self.b_eye.setIcon(svg_icon(EYE_SVG.replace("{c}", COLORS["muted"])))
+        info_row = QHBoxLayout()
+        info_row.setSpacing(8)
+        info_row.addWidget(self.b_eye)
+        info_row.addWidget(self.acc_info, 1)
+        acc_col = QVBoxLayout()
+        acc_col.setSpacing(4)
+        acc_col.addWidget(Label("KONTO", "FieldLabel"))
+        acc_col.addLayout(info_row)
+        acc.addLayout(acc_col, 1)
         self.acc_edit = LineEdit(placeholder="16-stellige Kontonummer", mono=True)
         self.acc_edit.setMaxLength(19)
         self.acc_edit.setEchoMode(QLineEdit.Password)
@@ -9001,8 +9014,6 @@ class SecurityTab(Page):
         acc = r.get("account", "")
         logged_in = bool(re.search(r"account(?: number)?:\s*\d", acc, re.I)) or "expires" in acc.lower()
         if logged_in:
-            num = re.search(r"(\d{4})\s*$", re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I).group(1)) \
-                if re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I) else None
             exp = re.search(r"Expires at\s*:\s*(.+)", acc, re.I)
             dev = re.search(r"Device name\s*:\s*(.+)", acc, re.I)
             exp_txt = exp.group(1).strip() if exp else "?"
@@ -9012,10 +9023,14 @@ class SecurityTab(Page):
                 exp_txt = exp_dt.strftime("%d.%m.%Y") + (f"  (noch {days} Tage)" if days >= 0 else "  (abgelaufen)")
             except Exception:
                 pass
-            self.acc_info.setText(f"•••• {num.group(1) if num else ''}  ·  gültig bis {exp_txt}"
-                                  + (f"  ·  Gerät „{dev.group(1).strip()}“" if dev else ""))
+            full = re.search(r"account(?: number)?:\s*([\d ]+)", acc, re.I)
+            self.acc_num = re.sub(r"\D", "", full.group(1)) if full else ""
+            self.acc_rest = f"  ·  gültig bis {exp_txt}" + (f"  ·  Gerät „{dev.group(1).strip()}“" if dev else "")
+            self._show_acc()
         else:
+            self.acc_num = self.acc_rest = ""
             self.acc_info.setText("Nicht angemeldet")
+        self.b_eye.setVisible(logged_in and bool(self.acc_num))
         for w in (self.acc_edit, self.b_login):
             w.setVisible(not logged_in)
         self.b_logout.setVisible(logged_in)
@@ -9136,6 +9151,20 @@ class SecurityTab(Page):
                       on_done=lambda rc: (self.log.append_text(
                           "Angemeldet.\n" if rc == 0 else "error: Anmeldung fehlgeschlagen – Nummer prüfen oder "
                           "Gerätelimit (5 Geräte) im Mullvad-Konto erreicht.\n"), self.mv_refresh()))
+
+    def _show_acc(self):
+        """Kontonummer standardmäßig komplett verdeckt; das Auge zeigt sie an."""
+        if self.b_eye.isChecked() and self.acc_num:
+            num = " ".join(self.acc_num[i:i + 4] for i in range(0, len(self.acc_num), 4))
+        else:
+            num = "•••• •••• •••• ••••"
+        self.acc_info.setText(num + self.acc_rest)
+
+    def _toggle_acc(self):
+        shown = self.b_eye.isChecked()
+        self.b_eye.setIcon(svg_icon((EYE_OFF_SVG if shown else EYE_SVG).replace("{c}", COLORS["muted"])))
+        self.b_eye.setToolTip("Kontonummer verbergen" if shown else "Kontonummer anzeigen")
+        self._show_acc()
 
     def mv_logout(self):
         if ask_confirm(self, "Mullvad abmelden", "Dieses Gerät vom Mullvad-Konto abmelden?\n"
@@ -9259,6 +9288,13 @@ APP_AUTHOR = "PyloGER"
 APP_COMPANY = "Voxellab"
 APP_AUTHOR_MAIL = "contact@voxellab.de"
 
+EYE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
+ stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>"""
+EYE_OFF_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
+ stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+<path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-2.9 3.9M6.6 6.6C3.7 8.5 2 12 2 12s3.5 7 10 7
+a10.4 10.4 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>"""
 GEAR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}"
  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
 <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/>
@@ -10384,7 +10420,6 @@ class BackupTab(Page):
             hd = QHBoxLayout()
             hd.setSpacing(10)
             badge = StatusBadge("info", "Wartet")
-            badge.setFixedWidth(120)
             hd.addWidget(badge)
             hd.addWidget(Label(short_path(t), "PanelTitle"))
             hd.addStretch(1)
@@ -10446,7 +10481,8 @@ class BackupTab(Page):
         if "msg" in d:
             p["det"].setText(d["msg"])
         elif "done" in d:
-            txt = f"{fmt_bytes(d['done'])} / {fmt_bytes(self.job.total if self.job else 0)} · {d.get('speed', '')}"
+            speed = re.sub(r"(\d)([kKMGT]?B/s)$", r"\1 \2", d.get("speed", ""))
+            txt = f"{fmt_bytes(d['done'])} / {fmt_bytes(self.job.total if self.job else 0)} · {speed}"
             if d.get("written") is not None:
                 txt += f" · geschrieben (komprimiert): {fmt_bytes(d['written'])}"
             p["det"].setText(txt)

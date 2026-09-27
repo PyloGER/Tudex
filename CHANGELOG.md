@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0-beta.8
+- Mullvad: Kontonummer ist jetzt **komplett verdeckt**; das Auge daneben blendet sie ein und wieder aus.
+- Backup → Fortschritt: Statusfeld je Ziel passt sich dem Text an (war fest 120 px breit); Tempo lesbar als „16.45 MB/s“.
+
 ## 1.6.0-beta.7
 - Taskmanager → Leistung: **Kacheln anklicken für Details** (live, alle 2 s; erneut klicken oder „Schließen“ blendet aus):
   - **Prozessor**: Geschwindigkeit, Temperatur, Betriebszeit, Prozesse/Threads/Handles, Last; Modell, Basis- und Maximaltakt, Sockel, Kerne, virtuelle Prozessoren, Virtualisierung (KVM / AMD-V / VT-x), virtuelle Maschine, L1/L2/L3-Cache, CPUfreq-Treiber und -Regler, Energiemodus, Boost.
