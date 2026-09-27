@@ -9203,7 +9203,8 @@ def remote_info(repo, branch):
         cl = _http_get(f"{base}/CHANGELOG.md").decode(errors="replace")
     except Exception:
         cl = ""
-    return m.group(1), cl, sha
+    # pkgver kennt keinen Bindestrich: „1.6.0beta1“ → „1.6.0-beta.1“ (wie APP_VERSION)
+    return re.sub(r"(\d)(alpha|beta|rc)(\d*)$", r"\1-\2.\3", m.group(1)), cl, sha
 
 
 def fetch_package_sources(repo, ref, dest, progress=None):
@@ -9729,7 +9730,7 @@ class UpdatePanel(QWidget):
         except SyntaxError as e:
             show_error(self, "Update", f"Die neue Datei ist fehlerhaft und wird nicht übernommen: {e}")
             return
-        m = re.search(rb'^APP_VERSION = "([\w.]+)"', code, re.M)
+        m = re.search(rb'^APP_VERSION = "([\w.-]+)"', code, re.M)
         ver = m.group(1).decode() if m else "?"
         path = os.path.abspath(__file__)
         if not ask_confirm(self, "Aktualisieren", f"Skript auf Version {ver} ersetzen?\n\n{path}\n"
