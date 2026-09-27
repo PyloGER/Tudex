@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0
+Erstes offizielles Release. Die Versionszählung beginnt neu – die Einträge darunter sind die Vorabversionen bis 1.6.0-beta.12.
+
+- **11 Module** in einem Fenster: Updates, Software, Flatpak (Rechte per Schalter), Datenträger, Speicher, Backup, Swap, Taskmanager, Antivirus (ClamAV), Sicherheit, Benutzer.
+- **Backup**: Snapshots, Spiegel oder Archive auf mehrere Ziele gleichzeitig, eigene Namen mit Datum, Zeitplan, Wiederherstellen, Paketliste im Backup.
+- **Taskmanager**: Prozesse nach Programm gruppiert, Leistungs-Kacheln mit Details per Klick (CPU, RAM, Datenträger, Grafik, Netzwerk, Akku, Lüfter), Autostart und Bootzeit.
+- **Sicherheit**: Sicherheits-Check, Checkliste für Wartung, Datenschutz & Performance, DNS-Leak-Test, offene Ports, Mullvad VPN, Firewall.
+- Durchgehend im Tuxdex-Design, auch in allen Pop-ups; eigene Farbpalette unabhängig vom Desktop-Theme.
+- Hinweis für Installationen vor 1.0.0: Weil die Zählung neu beginnt, bietet der eingebaute Updater 1.0.0 nicht von selbst an. Einmal neu installieren (siehe README → Installation); danach funktionieren Updates wieder normal. Das PKGBUILD setzt `epoch=1`, damit pacman 1.0.0 nicht als Downgrade ansieht.
+
 ## 1.6.0-beta.12
 - Speicher → Typische Platzfresser & Aufräumen: **(i) neben jedem Eintrag** – beim Drüberfahren oder per Klick steht, was dort liegt, welcher Befehl beim Knopf läuft (z. B. `paccache -rk2`, `pacman -Rns`, `journalctl --vacuum-size=200M`) und was erhalten bleibt. Bei „nur Anzeige“ steht, wie man selbst aufräumt.
 
