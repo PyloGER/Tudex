@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0
+## 1.6.0-beta.1
 - **Neues Modul „Backup“**:
   - Mehrere Ziele gleichzeitig (USB-Platten, interne Laufwerke, Ordner) – jedes mit eigenem Fortschritt, Tempo und Restzeit.
   - **Snapshots**: jede Sicherung eine eigene Version, unveränderte Dateien kosten keinen Platz (Hardlinks, wie Time Machine).
@@ -17,6 +17,9 @@
 - Mullvad verbunden, aber Kill-Switch aus: Hinweis mit Knopf „Kill-Switch an“.
 - Virenscan: Hochrechnung ohne die Ladezeit der Signaturen, dazu voraussichtliches Ende (Uhrzeit) und Gesamtdauer.
 - Speicher → „Größen ermitteln“: misst parallel, zeigt jeden Wert sofort und einen Status wie beim Virenscan (läuft/fertig, was gerade gemessen wird, Fortschritt). Ordner, die länger als 2 Minuten brauchen, werden als „zu viele Dateien“ markiert statt alles zu blockieren.
+
+## 1.5.5
+- Einstellungen → Aktualisierung: Auswahl **Vollversion** oder **Beta** – Beta-Versionen bekommen neue Funktionen früher. Zurück zur Vollversion geht jederzeit.
 
 ## 1.5.4
 - Sicherheits-Check prüft zusätzlich:
