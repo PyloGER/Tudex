@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0-beta.1
+Sicherheits-Review aller root-Aktionen:
+- **Swap**: Swapfile anlegen überschreibt keine vorhandenen Dateien mehr (vorher hätte ein Tippfehler im Pfad z. B. eine beliebige Datei als root mit Nullen überschrieben). Gesperrt sind Systemordner (/etc, /usr, /boot …), Verknüpfungen und Pfade mit „..“; eine vorhandene Datei muss nachweislich ein Swapfile sein. Auf btrfs wird das Swapfile jetzt korrekt mit `btrfs filesystem mkswapfile` angelegt.
+- **Swap entfernen**: Die fstab-Zeile wird nur noch entfernt, wenn ihr erstes Feld genau der Pfad ist (vorher jede Zeile, die den Text enthielt); vorher wird `/etc/fstab.tuxdex.bak` angelegt.
+- **Formatieren**: Die letzte Prüfung vor `mkfs` erkennt jetzt auch eingehängte Partitionen, geöffnete LUKS-Container, LVM und aktiven Swap unterhalb des gewählten Geräts.
+- **Quarantäne**: Wiederhergestellte Systemdateien bekommen ihren ursprünglichen Besitzer und ihre Rechte zurück (vorher gehörten sie danach dem Benutzer und waren nur lesbar); nie mit setuid-Bits, Ziel darf nicht existieren.
+- **Icons**: Hilfsdateien liegen nicht mehr in einem vorhersagbaren Ordner in /tmp, sondern in /run/user/<uid> bzw. ~/.cache – kein Angriff über präparierte Verknüpfungen anderer Benutzer.
+- **Datenträger umbenennen**: Bezeichnungen dürfen nicht mit „-“ beginnen (wäre sonst als Befehlsoption gelesen worden).
+
 ## 1.0.0
 Erstes offizielles Release. Die Versionszählung beginnt neu – die Einträge darunter sind die Vorabversionen bis 1.6.0-beta.12.
 

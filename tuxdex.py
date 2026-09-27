@@ -38,6 +38,43 @@ from string import Template
 
 PKG_NAME_RE = re.compile(r"^[A-Za-z0-9@_.+-]+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9_./-]+$")
+# Hier legt Tuxdex nie ein Swapfile an und löscht dort nichts
+SWAP_FORBIDDEN = ("/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/efi", "/dev", "/proc", "/sys",
+                  "/run", "/var/lib/pacman", "/var/cache/pacman", "/root/.ssh")
+
+
+def _is_swapfile(path):
+    """True, wenn path ein aktiver Swap ist oder eine Swap-Signatur trägt (blkid, braucht sudo-Sitzung)."""
+    active = [l.split()[0] for l in _read("/proc/swaps").splitlines()[1:] if l.split()]
+    if path in active:
+        return True
+    try:
+        r = subprocess.run(["sudo", "-n", "blkid", "-p", "-o", "value", "-s", "TYPE", path],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == "swap"
+    except Exception:
+        return False
+
+
+def swap_path_problem(path, must_exist=False):
+    """Fehlertext, wenn path kein sicherer Ort für ein Swapfile ist – sonst None."""
+    if not PATH_RE.match(path) or os.path.normpath(path) != path or path == "/":
+        return "Bitte einen einfachen absoluten Pfad angeben (ohne Leerzeichen, „..“ oder doppelte /)."
+    if any(path == d or path.startswith(d + "/") for d in SWAP_FORBIDDEN):
+        return f"In {os.path.dirname(path)} legt Tuxdex aus Sicherheitsgründen kein Swapfile an."
+    if not os.path.isdir(os.path.dirname(path)):
+        return f"Den Ordner {os.path.dirname(path)} gibt es nicht."
+    if os.path.islink(path):
+        return f"{path} ist eine Verknüpfung – bitte den echten Pfad angeben."
+    if os.path.lexists(path):
+        if not os.path.isfile(path):
+            return f"{path} ist keine normale Datei."
+        if not _is_swapfile(path):
+            return (f"{path} existiert schon und ist kein Swapfile. Tuxdex überschreibt keine anderen Dateien – "
+                    "bitte einen anderen Namen wählen.")
+    elif must_exist:
+        return f"{path} gibt es nicht."
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -131,7 +168,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0-beta.1"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -427,11 +464,24 @@ QPushButton#Seg:checked { background: $bg3; color: $ink; }
 """)
 
 
+def _asset_dir():
+    """Privater Ordner für Icons: /run/user/<uid> (nur für dich lesbar) oder ~/.cache/tuxdex – nie ein
+    vorhersagbarer Ordner in /tmp, den ein anderer Benutzer vorher anlegen und präparieren könnte."""
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not (base and os.path.isdir(base) and os.stat(base).st_uid == os.getuid()):
+        base = os.path.join(os.path.expanduser("~/.cache"))
+    d = os.path.join(base, "tuxdex-assets")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if os.path.islink(d) or st.st_uid != os.getuid():
+        d = tempfile.mkdtemp(prefix="tuxdex-")
+    return d
+
+
 def _write_asset(name, svg):
-    d = os.path.join(tempfile.gettempdir(), f"tuxdex-{os.getuid()}")
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, name)
-    with open(path, "w") as f:
+    path = os.path.join(_asset_dir(), name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(svg)
     return path
 
@@ -3135,15 +3185,26 @@ class SwapTab(Page):
             return
         if not self.app.priv.ensure(self):
             return
+        err = swap_path_problem(path)
+        if err:
+            show_warning(self, "Swapfile", err)
+            return
 
         p = shlex.quote(path)
+        fs = subprocess.run(["findmnt", "-n", "-o", "FSTYPE", "--target", os.path.dirname(path)],
+                            capture_output=True, text=True).stdout.strip()
+        if fs == "btrfs":
+            # btrfs braucht eine Datei ohne Copy-on-Write – das erledigt btrfs selbst
+            make = f"rm -f -- {p} && btrfs filesystem mkswapfile --size {size}g {p}"
+        else:
+            make = (f"rm -f -- {p} && (fallocate -l {size}G {p} || dd if=/dev/zero of={p} bs=1M "
+                    f"count=$(({size}*1024)) status=progress) && chmod 600 {p} && mkswap {p}")
         script = (
             f"swapoff {p} 2>/dev/null; "
-            f"fallocate -l {size}G {p} || dd if=/dev/zero of={p} bs=1M count=$(({size}*1024)) status=progress; "
-            f"chmod 600 {p} && "
-            f"mkswap {p} && "
+            f"{make} && "
             f"swapon {p} && "
-            f"(grep -qF {p} /etc/fstab || echo '{path} none swap defaults 0 0' >> /etc/fstab)"
+            f"(awk -v p={p} '$1==p {{f=1}} END {{exit !f}}' /etc/fstab || "
+            f"echo {shlex.quote(path + ' none swap defaults 0 0')} >> /etc/fstab)"
         )
         self._run_root(script)
 
@@ -3167,7 +3228,14 @@ class SwapTab(Page):
         p = shlex.quote(path)
         script = f"swapoff {p}"
         if self.cb_remove.isChecked():
-            script += f"; rm -f {p}; grep -vF {p} /etc/fstab > /etc/fstab.tmp; mv /etc/fstab.tmp /etc/fstab"
+            err = swap_path_problem(path, must_exist=True)
+            if err:
+                show_warning(self, "Swapfile", err + "\n\nEs wird nur deaktiviert, nichts gelöscht.")
+            else:
+                # nur die fstab-Zeile, deren erstes Feld genau dieser Pfad ist; Sicherung als fstab.tuxdex.bak
+                script += (f" && rm -f -- {p} && cp -a /etc/fstab /etc/fstab.tuxdex.bak && "
+                           f"awk -v p={p} '$1!=p' /etc/fstab > /etc/fstab.tuxdex.tmp && "
+                           "cat /etc/fstab.tuxdex.tmp > /etc/fstab && rm -f /etc/fstab.tuxdex.tmp")
         self._run_root(script)
 
     def _run_root(self, script):
@@ -3315,7 +3383,7 @@ CHECK_TOOLS = {
     "exfat": ["fsck.exfat", "-n"], "ntfs": ["ntfsfix", "-n"], "xfs": ["xfs_repair", "-n"],
 }
 
-LABEL_RE = re.compile(r"^[A-Za-z0-9 _.-]{1,255}$")
+LABEL_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9 _.-]{0,254}$")   # nie mit „-“ beginnen (sonst Option)
 
 
 def _mounts(node):
@@ -3323,6 +3391,31 @@ def _mounts(node):
     if mps is None:
         mps = [node.get("mountpoint")]
     return [m for m in mps if m]
+
+
+def format_blockers(dev):
+    """Gründe, warum dev jetzt nicht formatiert werden darf: eingehängte oder aktive Teile darunter
+    (Partitionen, geöffnete LUKS-Container, LVM, Swap) oder das Laufwerk des laufenden Systems."""
+    try:
+        data = json.loads(subprocess.run(["lsblk", "-J", "-o", "PATH,TYPE,FSTYPE,MOUNTPOINTS", dev],
+                                         capture_output=True, text=True, timeout=10).stdout or "{}")
+    except Exception:
+        return [f"{dev} konnte nicht geprüft werden (lsblk)."]
+    out, stack = [], list(data.get("blockdevices", []))
+    if not stack:
+        return [f"{dev} wurde nicht gefunden."]
+    swaps = {l.split()[0] for l in _read("/proc/swaps").splitlines()[1:] if l.split()}
+    while stack:
+        n = stack.pop()
+        stack += n.get("children") or []
+        mps = [m for m in (n.get("mountpoints") or []) if m]
+        if mps:
+            out.append(f"{n['path']} ist eingehängt ({', '.join(mps)})")
+        if n.get("path") in swaps:
+            out.append(f"{n['path']} wird als Swap benutzt")
+        if n.get("path") != dev and n.get("type") in ("crypt", "lvm", "raid1", "raid0", "raid5", "raid10"):
+            out.append(f"{n['path']} ist geöffnet/aktiv ({n['type']})")
+    return out
 
 
 def _all_mounts(node):
@@ -3761,10 +3854,11 @@ class DisksTab(Page):
         if label and not LABEL_RE.match(label):
             show_warning(self, "Ungültige Bezeichnung", "Erlaubt sind Buchstaben, Ziffern, Leerzeichen und _ . -")
             return
-        # Sicherheitsnetz: direkt vor dem Formatieren noch einmal prüfen, ob etwas eingehängt ist
-        r = subprocess.run(["findmnt", "-rn", "-S", n["path"]], capture_output=True, text=True)
-        if r.stdout.strip():
-            show_error(self, "Noch eingehängt", f"{n['path']} ist eingehängt. Bitte zuerst aushängen.")
+        # Sicherheitsnetz: direkt vor dem Formatieren alles darunter prüfen (auch Partitionen, LUKS, Swap)
+        blockers = format_blockers(n["path"])
+        if blockers:
+            show_error(self, "Formatieren nicht möglich", "\n".join(blockers) + "\n\nBitte erst aushängen bzw. "
+                       "schließen.")
             return
         cmd = builder(n["path"], label)
         if self._need_tool(cmd[0], pkg):
@@ -7890,6 +7984,11 @@ class AntivirusTab(Page):
             qname = f"{int(time.time() * 1000)}_{os.path.basename(f['path'])}"
             dest = os.path.join(QUARANTINE_DIR, qname)
             try:
+                try:
+                    st = os.lstat(f["path"])
+                    owner = [st.st_uid, st.st_gid, st.st_mode & 0o7777]
+                except OSError:
+                    owner = None
                 if f in root_items:
                     r = subprocess.run(["sudo", "-n", "bash", "-c",
                                         f"mv -- {shlex.quote(f['path'])} {shlex.quote(dest)} && "
@@ -7901,7 +8000,7 @@ class AntivirusTab(Page):
                     shutil.move(f["path"], dest)
                     os.chmod(dest, 0o400)
                 index[qname] = {"orig": f["path"], "threat": f["threat"], "at": time.time(),
-                                "root": f in root_items}
+                                "root": f in root_items, "owner": owner}
                 f["status"] = "in Quarantäne"
                 self.log.append_text(f"In Quarantäne: {f['path']}\n")
             except Exception as e:
@@ -7979,7 +8078,16 @@ class AntivirusTab(Page):
                 if v.get("root") or self._needs_root(v["orig"]):
                     if not self.app.priv.ensure(self):
                         return
-                    r = subprocess.run(["sudo", "-n", "mv", "-n", "--", src, v["orig"]], capture_output=True, text=True)
+                    orig = v["orig"]
+                    if not os.path.isabs(orig) or os.path.normpath(orig) != orig or os.path.lexists(orig):
+                        raise OSError("ungültiger Zielpfad oder am Zielort existiert bereits eine Datei")
+                    # Besitzer und Rechte wie vor der Quarantäne; ohne Angabe: root, nicht ausführbar
+                    own = v.get("owner") if isinstance(v.get("owner"), list) and len(v["owner"]) == 3 else None
+                    uid_, gid_, mode_ = (int(own[0]), int(own[1]), int(own[2]) & 0o777) if own else (0, 0, 0o644)
+                    q = shlex.quote
+                    r = subprocess.run(["sudo", "-n", "sh", "-c",
+                                        f"mv -n -T -- {q(src)} {q(orig)} && chown -h {uid_}:{gid_} -- {q(orig)} && "
+                                        f"chmod {mode_:o} -- {q(orig)}"], capture_output=True, text=True)
                     if r.returncode != 0:
                         raise OSError(r.stderr.strip())
                 else:
