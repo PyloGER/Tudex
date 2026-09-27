@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+Fehlerbehebungen.
+
+- **Checkliste lud nicht mehr**, nachdem „Auf 500 MB / 1 Monat“ beim System-Protokoll benutzt wurde: Bei restriktiver umask legte Tuxdex den Ordner `/etc/systemd/journald.conf.d` ohne Leserecht an, und die Checkliste brach mit „Keine Berechtigung“ ab. Nicht lesbare Konfig-Ordner werden jetzt übersprungen, und Tuxdex legt Ordner und Dateien immer lesbar an (755/644), auch bei Speicherabbildern und I/O-Scheduler. Wer den Fehler schon hat: den Knopf einfach noch einmal drücken, dann werden die Rechte repariert.
+- **Sprachwechsel**: Die Rückfrage nach dem Neustart ist nicht mehr halb Deutsch, halb Englisch.
+
 ## 1.1.0
 Sicherheit, Englisch und ein eigenes pacman-Repository.
 
