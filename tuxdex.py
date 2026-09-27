@@ -11559,6 +11559,9 @@ def changes_since(changelog, current):
             if keep:
                 out.append(f"<b>Version {h.group(1)}</b>")
             continue
+        if line.startswith("#"):          # andere Überschrift (z. B. „Vorabversionen“) beendet den Abschnitt
+            keep = False
+            continue
         if keep and line.strip().startswith(("-", "*")):
             item = line.strip()[1:].strip().replace("&", "&amp;").replace("<", "&lt;")
             item = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", item)
