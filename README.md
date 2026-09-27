@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.1-e9c46a">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0--beta.2-e9c46a">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -18,6 +18,9 @@
 <p align="center">
   <img src="docs/readme/banner.png" alt="Tuxdex – Dein Arch-System in einem Fenster" width="100%">
 </p>
+
+> [!WARNING]
+> **Alpha-Version.** Aktionen mit Administrator-Rechten (root) ändern dein System direkt. Tuxdex fragt vor der ersten solchen Aktion einmal nach deiner Zustimmung. Nutzung auf eigenes Risiko – vorher ein Backup anlegen.
 
 ---
 

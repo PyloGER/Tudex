@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.0-beta.2
+- **Alpha-Hinweis**: Vor der ersten Aktion mit root-Rechten erscheint einmal ein Hinweis („Alpha-Phase, Nutzung auf eigenes Risiko“). Erst nach Haken und „Akzeptieren“ führt Tuxdex root-Befehle aus – ohne Zustimmung wird jede root-Aktion abgebrochen, auch intern. Dazu ein dauerhaftes „ALPHA“-Abzeichen in der Kopfleiste und ein Hinweis im Passwort-Fenster.
+
 ## 1.1.0-beta.1
 Sicherheits-Review aller root-Aktionen:
 - **Swap**: Swapfile anlegen überschreibt keine vorhandenen Dateien mehr (vorher hätte ein Tippfehler im Pfad z. B. eine beliebige Datei als root mit Nullen überschrieben). Gesperrt sind Systemordner (/etc, /usr, /boot …), Verknüpfungen und Pfade mit „..“; eine vorhandene Datei muss nachweislich ein Swapfile sein. Auf btrfs wird das Swapfile jetzt korrekt mit `btrfs filesystem mkswapfile` angelegt.

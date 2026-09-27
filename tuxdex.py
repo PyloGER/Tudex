@@ -168,7 +168,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.0-beta.1"
+APP_VERSION = "1.1.0-beta.2"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -666,6 +666,9 @@ def run_capture_async(args, callback, needs_sudo=False, timeout=60):
     nach einem Passwort - schlägt einfach fehl, wenn keine gültige
     Sitzung existiert."""
     full_args = (["sudo", "-n"] + args) if needs_sudo else args
+    if needs_sudo and not alpha_accepted():
+        QTimer.singleShot(0, lambda: callback(1, "", "Alpha-Hinweis nicht bestätigt – keine root-Aktion."))
+        return
 
     def worker():
         try:
@@ -779,6 +782,11 @@ class ProcessRun:
         else:
             inner = cmd
         self.full_cmd = (["sudo", "-n"] + inner) if needs_sudo else inner
+        if needs_sudo and not alpha_accepted():
+            log.append_text("Abgebrochen: Der Alpha-Hinweis wurde nicht bestätigt – keine Aktion mit root-Rechten.\n")
+            if on_done:
+                QTimer.singleShot(0, lambda: on_done(1))
+            return
         _ACTIVE_RUNS.add(self)
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -1275,6 +1283,68 @@ def show_error(parent, title, text):
     _msg(parent, QMessageBox.Critical, title, text, [("OK", "primary", True)])
 
 
+ALPHA_FILE = os.path.join(os.path.expanduser("~/.config"), "tuxdex", "settings.json")
+ALPHA_TEXT = ("Tuxdex ist in der <b>Alpha-Phase</b>. Aktionen mit Administrator-Rechten (root) ändern dein System "
+              "direkt – z. B. Pakete, Datenträger, Swap, Firewall, Systemdateien. Trotz Rückfragen und Prüfungen "
+              "können Fehler passieren, bis hin zu Datenverlust oder einem System, das nicht mehr startet.<br><br>"
+              "<b>Nutzung auf eigenes Risiko.</b> Es gibt keine Gewährleistung (MIT-Lizenz). Lege vorher ein Backup "
+              "an und lies bei jeder Rückfrage, welcher Befehl ausgeführt wird – er steht immer im Ausgabefeld.")
+
+
+def alpha_accepted():
+    return bool(_load_json(ALPHA_FILE, {}).get("alpha_accepted"))
+
+
+class AlphaDialog(QDialog):
+    """Einmalige Zustimmung vor der ersten Aktion mit root-Rechten."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Alpha-Version – Hinweis")
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetMinimumSize)
+        lay.setContentsMargins(32, 28, 32, 24)
+        lay.setSpacing(14)
+        spacer = QWidget()
+        spacer.setFixedSize(480, 0)
+        lay.addWidget(spacer)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(StatusBadge("warn", "ALPHA"))
+        head.addWidget(Label("Aktionen mit root-Rechten", "DialogTitle"), 1)
+        lay.addLayout(head)
+        txt = Label(ALPHA_TEXT, wrap=True)
+        txt.setTextFormat(Qt.RichText)
+        lay.addWidget(txt)
+        self.cb = QCheckBox("Ich habe verstanden und nutze Tuxdex auf eigenes Risiko.")
+        lay.addWidget(self.cb)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(Button("Abbrechen", "ghost", self.reject))
+        self.ok = Button("Akzeptieren", "primary", self.accept)
+        self.ok.setEnabled(False)
+        self.cb.toggled.connect(self.ok.setEnabled)
+        btns.addWidget(self.ok)
+        lay.addLayout(btns)
+
+
+def ask_alpha_consent(parent):
+    """True, wenn der Alpha-Hinweis schon bestätigt ist oder jetzt bestätigt wird. Wird gespeichert."""
+    if alpha_accepted():
+        return True
+    if AlphaDialog(parent).exec() != QDialog.Accepted:
+        return False
+    data = _load_json(ALPHA_FILE, {})
+    data["alpha_accepted"] = datetime.now().isoformat(timespec="seconds")
+    data["alpha_version"] = APP_VERSION
+    _save_json(ALPHA_FILE, data)
+    win = parent.window() if parent else None
+    if hasattr(win, "refresh_alpha"):
+        win.refresh_alpha()
+    return True
+
+
 class PasswordDialog(QDialog):
     def __init__(self, parent, title="Administrator-Passwort", heading="sudo-Passwort eingeben",
                  note="Wird für die Dauer des Programmlaufs gemerkt – du musst es danach nicht erneut eingeben.",
@@ -1292,6 +1362,8 @@ class PasswordDialog(QDialog):
         lay.setSpacing(12)
         lay.addWidget(Label(heading, "DialogTitle"))
         lay.addWidget(Label(note, "Small", wrap=True))
+        if heading == "sudo-Passwort eingeben":
+            lay.addWidget(Label("▲  Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko.", "Warn", wrap=True))
         self.entry = LineEdit()
         self.entry.setEchoMode(QLineEdit.Password)
         self.entry.setMinimumHeight(42)
@@ -1425,6 +1497,8 @@ class PrivilegeManager:
     def ensure(self, parent=None):
         """Blockiert kurz (GUI-Thread!) und zeigt bei Bedarf den Passwort-
         Dialog. Gibt True zurück, wenn eine gültige sudo-Sitzung besteht."""
+        if not ask_alpha_consent(parent or self.root):
+            return False
         if self.is_authenticated():
             self._notify(True)
             return True
@@ -11563,7 +11637,12 @@ def load_settings():
 
 
 def save_settings(s):
-    _save_json(SETTINGS_FILE, s)
+    cur = _load_json(SETTINGS_FILE, {})
+    cur.update(s)
+    for k in ("alpha_accepted", "alpha_version"):      # Zustimmung nie durch einen älteren Stand überschreiben
+        if k in _load_json(SETTINGS_FILE, {}):
+            cur[k] = _load_json(SETTINGS_FILE, {})[k]
+    _save_json(SETTINGS_FILE, cur)
 
 
 def normalize_repo(text):
@@ -12406,6 +12485,10 @@ class MainWindow(QWidget):
         tl.addWidget(logo)
         tl.addSpacing(4)
         tl.addWidget(Label("Tuxdex", "AppTitle"))
+        self.alpha_badge = StatusBadge("warn", "ALPHA")
+        self.alpha_badge.setToolTip("Alpha-Version: Aktionen mit root-Rechten auf eigenes Risiko. "
+                                    "Vor der ersten root-Aktion fragt Tuxdex einmal nach deiner Zustimmung.")
+        tl.addWidget(self.alpha_badge)
         tl.addStretch(1)
         self.auth_badge = StatusBadge("off", "Nicht angemeldet")
         tl.addWidget(self.auth_badge)
