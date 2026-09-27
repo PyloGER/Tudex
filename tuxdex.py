@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.5.5"
+APP_VERSION = "1.6.0"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -4763,6 +4763,110 @@ def version_status():
     return res
 
 
+def proxy_state():
+    """Eingestellter Proxy: [(quelle, beschreibung)] – leer, wenn keiner gesetzt ist."""
+    res = []
+    for k in ("all_proxy", "https_proxy", "http_proxy", "socks_proxy"):
+        v = os.environ.get(k) or os.environ.get(k.upper())
+        if v:
+            res.append(("Umgebungsvariable", f"{k} = {re.sub(r'//[^@/]+@', '//…@', v)}"))
+    if which("gsettings"):
+        try:
+            mode = subprocess.run(["gsettings", "get", "org.gnome.system.proxy", "mode"], capture_output=True,
+                                  text=True, timeout=3).stdout.strip().strip("'")
+            if mode == "manual":
+                parts = []
+                for proto in ("https", "http", "socks"):
+                    h = subprocess.run(["gsettings", "get", f"org.gnome.system.proxy.{proto}", "host"],
+                                       capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
+                    pt = subprocess.run(["gsettings", "get", f"org.gnome.system.proxy.{proto}", "port"],
+                                        capture_output=True, text=True, timeout=3).stdout.strip()
+                    if h:
+                        parts.append(f"{proto.upper()} {h}:{pt}")
+                res.append(("GNOME", "manuell · " + (", ".join(parts) or "ohne Adresse")))
+            elif mode == "auto":
+                url = subprocess.run(["gsettings", "get", "org.gnome.system.proxy", "autoconfig-url"],
+                                     capture_output=True, text=True, timeout=3).stdout.strip().strip("'")
+                res.append(("GNOME", "automatisch (PAC)" + (f" · {url}" if url else "")))
+        except Exception:
+            pass
+    kio = _read(os.path.expanduser("~/.config/kioslaverc"))
+    m = re.search(r"^ProxyType=(\d)", kio, re.M)
+    if m and m.group(1) != "0":
+        kinds = {"1": "manuell", "2": "automatisch (PAC)", "3": "automatisch (WPAD)", "4": "aus Umgebungsvariablen"}
+        detail = kinds.get(m.group(1), "an")
+        for key in ("httpsProxy", "httpProxy", "socksProxy"):
+            mm = re.search(rf"^{key}=(.+)$", kio, re.M)
+            if mm and mm.group(1).strip() and m.group(1) == "1":
+                detail += f" · {mm.group(1).strip().replace(' ', ':')}"
+                break
+        res.append(("KDE", detail))
+    return res
+
+
+def _get_json(url, timeout=10):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "tuxdex"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def _get_text(url, timeout=10):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "tuxdex"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode().strip()
+
+
+def dns_leak_servers():
+    """DNS-Leak-Test über bash.ws: löst zufällige Namen über den System-DNS auf und fragt ab, welche
+    DNS-Server sie angefragt haben. [(ip, land, anbieter/ASN)]"""
+    import socket
+    tid = _get_text("https://bash.ws/id")
+    if not re.match(r"^\w+$", tid):
+        raise ValueError("unerwartete Antwort von bash.ws")
+    for i in range(6):
+        try:
+            socket.getaddrinfo(f"{i}.{tid}.bash.ws", None)
+        except OSError:
+            pass                 # NXDOMAIN ist erwartet – die Anfrage selbst zählt
+    data = _get_json(f"https://bash.ws/dnsleak/test/{tid}?json", timeout=15)
+    return [(d.get("ip", "?"), d.get("country_name") or d.get("country") or "", d.get("asn") or "")
+            for d in data if d.get("type") == "dns"]
+
+
+def ip_reputation():
+    """Wie Webseiten deine IP einstufen (ipapi.is): dict(ip, org, country, city, vpn, vpn_name, proxy, tor,
+    hosting)."""
+    d = _get_json("https://api.ipapi.is/")
+    comp, asn, loc = d.get("company") or {}, d.get("asn") or {}, d.get("location") or {}
+    vpn = d.get("vpn") or {}
+    return {"ip": d.get("ip", "?"), "org": comp.get("name") or asn.get("org") or "",
+            "asn": f"AS{asn.get('asn')}" if asn.get("asn") else "", "country": loc.get("country", ""),
+            "city": loc.get("city", ""), "vpn": bool(d.get("is_vpn")),
+            "vpn_name": vpn.get("service") or vpn.get("name") or "", "proxy": bool(d.get("is_proxy")),
+            "tor": bool(d.get("is_tor")), "hosting": bool(d.get("is_datacenter"))}
+
+
+def vpn_active(v):
+    """Läuft der Internetverkehr gerade durch ein VPN?"""
+    mv = (v.get("mullvad") or "").lower()
+    ts = v.get("tailscale") or {}
+    return mv.startswith("connected") or bool(ts.get("running") and ts.get("exit_node")) or \
+        (v.get("route_dev") or "") in v.get("others", [])
+
+
+def leak_test():
+    """Kompletter Test – jeder Teil einzeln, damit ein ausgefallener Dienst nicht alles verhindert."""
+    res = {"vpn": vpn_active(vpn_state()), "local_dns": dns_state(), "proxy": proxy_state()}
+    for key, fn in (("rep", ip_reputation), ("dns", dns_leak_servers), ("mullvad", public_ip_info)):
+        try:
+            res[key] = fn()
+        except Exception as e:
+            res[key + "_err"] = str(e)[:120]
+    return res
+
+
 def system_summary():
     osr = {}
     for line in _read("/etc/os-release").splitlines():
@@ -6587,7 +6691,7 @@ class SecurityTab(Page):
         # ---------- Übersicht ----------
         ov = Panel("Übersicht")
         self.rows = {}
-        for key, title in (("vpn", "VPN"), ("dns", "DNS"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
+        for key, title in (("vpn", "VPN"), ("dns", "DNS"), ("proxy", "Proxy"), ("fw", "Firewall"), ("luks", "Festplattenverschlüsselung (LUKS)"),
                            ("sb", "Secure Boot"), ("ucode", "CPU-Microcode"), ("swapenc", "Swap-Verschlüsselung"),
                            ("kernel", "Kernel-Schutz"), ("upd", "System-Updates"), ("cve", "Bekannte Sicherheitslücken"), ("av", "Antivirus"),
                            ("ports", "Offene Netzwerk-Ports"), ("ssh", "SSH-Server")):
@@ -6624,6 +6728,21 @@ class SecurityTab(Page):
         net.body.addLayout(Field("Lokale Adressen", self.ip_local))
         net.body.addWidget(self.ip_pub)
         self.lay.addWidget(net)
+
+        # ---------- Leak-Test ----------
+        self.leak_btn = Button("Test starten", "primary", self.run_leak_test)
+        lk = Panel("Leak-Test & VPN-Erkennung", [self.leak_btn])
+        lk.body.addWidget(Label("Prüft, welche DNS-Server deine Anfragen wirklich beantworten (DNS-Leak) und ob "
+                                "Webseiten deine Verbindung als VPN, Proxy, Tor oder Rechenzentrum erkennen. "
+                                "Fragt bash.ws, ipapi.is und am.i.mullvad.net.", "Hint", wrap=True))
+        self.leak_rows = {}
+        for key, title in (("leak", "DNS-Leak"), ("detect", "Erkennung durch Webseiten"),
+                           ("dnslist", "DNS-Server, die Webseiten sehen"), ("black", "Sperrlisten")):
+            row = CheckRow(title)
+            row.set("off", "Nicht geprüft", "")
+            self.leak_rows[key] = row
+            lk.body.addWidget(row)
+        self.lay.addWidget(lk)
 
         # ---------- Mullvad ----------
         self.mv_panel = Panel("Mullvad VPN")
@@ -6800,6 +6919,7 @@ class SecurityTab(Page):
             r["ifaces"], r["gw"], r["dns"] = ifaces, gw, dns
             r["vpn"] = vpn_state(ifaces)
             r["dns_now"] = dns_state()
+            r["proxy"] = proxy_state()
             # Firewall
             r["fw"] = svc_active("ufw") or svc_active("firewalld") or svc_active("nftables") \
                 or svc_active("iptables")
@@ -6863,6 +6983,12 @@ class SecurityTab(Page):
                       "Anfragen sind unverschlüsselt – der Netzbetreiber kann sehen, welche Seiten du aufrufst."))
             self.rows["dns"].set("ok" if d["dot"] or vpn_link else "info",
                                  "Verschlüsselt" if d["dot"] else ("Über VPN" if vpn_link else "Unverschlüsselt"), txt)
+        # Proxy
+        if r["proxy"]:
+            self.rows["proxy"].set("info", "Eingestellt", " · ".join(f"{q}: {d}" for q, d in r["proxy"])
+                                   + ". Programme schicken ihren Verkehr über diesen Proxy.")
+        else:
+            self.rows["proxy"].set("ok", "Keiner", "Es ist kein System-Proxy eingestellt.")
         # Firewall
         if r["fw"]:
             self.rows["fw"].set("ok", "Aktiv", f"{r['fw_name']} läuft"
@@ -7110,6 +7236,87 @@ class SecurityTab(Page):
                 txt = f"Öffentliche IP konnte nicht ermittelt werden ({e})."
             ui(lambda: self.ip_pub.setText(txt))
         threading.Thread(target=worker, daemon=True).start()
+
+    def run_leak_test(self):
+        self.leak_btn.setEnabled(False)
+        self.leak_btn.setText("Teste …")
+        for row in self.leak_rows.values():
+            row.set("info", "Prüfe …", "")
+
+        def worker():
+            r = leak_test()
+            ui(lambda: self._show_leak(r))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_leak(self, r):
+        self.leak_btn.setEnabled(True)
+        self.leak_btn.setText("Erneut testen")
+        vpn = r["vpn"]
+        rep = r.get("rep")
+        # --- Erkennung ---
+        if rep:
+            where = " · ".join(x for x in (rep["ip"], rep["city"], rep["country"], rep["org"]) if x)
+            kinds = [k for k, on in (("VPN" + (f" ({rep['vpn_name']})" if rep["vpn_name"] else ""), rep["vpn"]),
+                                     ("Proxy", rep["proxy"]), ("Tor", rep["tor"]),
+                                     ("Rechenzentrum/Hosting", rep["hosting"])) if on]
+            if kinds:
+                self.leak_rows["detect"].set("info", "Erkannt", f"{where}. Webseiten erkennen: {', '.join(kinds)}. "
+                                             "Manche Dienste (Streaming, Banken) sperren oder fragen dann nach.")
+            else:
+                self.leak_rows["detect"].set("ok" if not vpn else "info", "Nicht erkannt",
+                                             f"{where}. Sieht aus wie ein normaler Internetanschluss"
+                                             + (" – das VPN wird nicht als solches erkannt." if vpn else "."))
+        else:
+            self.leak_rows["detect"].set("off", "Nicht prüfbar", f"ipapi.is nicht erreichbar ({r.get('rep_err')}).")
+        # --- DNS-Server laut bash.ws ---
+        dns = r.get("dns")
+        local = r.get("local_dns") or {}
+        local_via_vpn = bool(local.get("link")) and iface_kind(local["link"]) == "VPN"
+        if dns is not None:
+            if dns:
+                lst = "; ".join(f"{ip} ({', '.join(x for x in (c, a) if x)})" for ip, c, a in dns[:6])
+                self.leak_rows["dnslist"].set("info", f"{len(dns)} Server", lst + ".")
+            else:
+                self.leak_rows["dnslist"].set("off", "Keine gesehen", "bash.ws hat keine DNS-Anfrage empfangen.")
+        else:
+            self.leak_rows["dnslist"].set("off", "Nicht prüfbar", f"bash.ws nicht erreichbar ({r.get('dns_err')}).")
+        # --- Leak-Bewertung ---
+        if not vpn:
+            self.leak_rows["leak"].set("off", "Kein VPN", "Ohne VPN gibt es kein Leck im eigentlichen Sinn: "
+                                       f"DNS geht an {local.get('provider', 'deinen DNS-Server')}"
+                                       + (" (verschlüsselt)." if local.get("dot") else
+                                          " – dein Netzbetreiber kann die aufgerufenen Seiten sehen."))
+        else:
+            rep_asn = (rep or {}).get("asn", "")
+            foreign = [d for d in (dns or []) if rep_asn and d[2] and rep_asn not in d[2]]
+            if local and not local_via_vpn and not local.get("dot") and \
+                    local.get("provider", "").startswith(("Router", "Internetanbieter")):
+                self.leak_rows["leak"].set("danger", "Leck", f"DNS-Anfragen gehen an {local['provider']} "
+                                           f"({local['server']}) über {local.get('link') or 'das normale Netz'} – "
+                                           "am VPN vorbei. Im VPN-Programm den VPN-DNS erzwingen (Mullvad: "
+                                           "Kill-Switch/Lockdown).")
+            elif foreign and not r.get("mullvad", {}).get("mullvad_exit_ip"):
+                self.leak_rows["leak"].set("warn", "Möglich", "Einige DNS-Server gehören nicht zum Anbieter deiner "
+                                           "VPN-Adresse: " + ", ".join(f"{d[0]} ({d[2]})" for d in foreign[:4])
+                                           + ". Prüfen, ob das dein gewollter DNS-Dienst ist.")
+            elif dns is None:
+                self.leak_rows["leak"].set("off", "Nicht prüfbar", "Der Leak-Test-Dienst war nicht erreichbar.")
+            else:
+                self.leak_rows["leak"].set("ok", "Kein Leck", "Alle DNS-Anfragen laufen über das VPN.")
+        # --- Sperrlisten (Mullvad-Check) ---
+        mv = r.get("mullvad")
+        if mv:
+            bl = mv.get("blacklisted") or {}
+            hits = [x.get("name") or x.get("link") or "?" for x in bl.get("results", []) if x.get("blacklisted")]
+            if bl.get("blacklisted") or hits:
+                self.leak_rows["black"].set("warn", "Gelistet", "Deine öffentliche IP steht auf Sperrlisten: "
+                                            + ", ".join(hits[:5]) + ". Manche Seiten zeigen dann Captchas.")
+            else:
+                self.leak_rows["black"].set("ok", "Sauber", "Deine öffentliche IP steht auf keiner bekannten "
+                                                           "Sperrliste.")
+        else:
+            self.leak_rows["black"].set("off", "Nicht prüfbar", f"am.i.mullvad.net nicht erreichbar "
+                                                                f"({r.get('mullvad_err')}).")
 
     def _root(self, cmd, then=None, interactive=False):
         if not self.app.priv.ensure(self):

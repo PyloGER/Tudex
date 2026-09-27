@@ -1,6 +1,17 @@
 # Changelog
 
-## 1.5.5
+## 1.6.0
+- **Neues Modul „Backup“**:
+  - Mehrere Ziele gleichzeitig (USB-Platten, interne Laufwerke, Ordner) – jedes mit eigenem Fortschritt, Tempo und Restzeit.
+  - **Snapshots**: jede Sicherung eine eigene Version, unveränderte Dateien kosten keinen Platz (Hardlinks, wie Time Machine).
+  - **Spiegel**: 1:1-Kopie, überträgt nur Änderungen.
+  - **Archiv**: komprimiert mit zstd, xz oder gzip (3 Stärken), optional mit Passwort (AES-256). Wird einmal gepackt und parallel auf alle Ziele geschrieben, mit Prüfsumme und Prüfung nach dem Schreiben. Auf FAT32 automatisch in 4-GB-Teile geteilt.
+  - Ausnahmen (z. B. `~/.cache`), Versionen behalten (3–50), root-Modus für Systemordner.
+  - Vorhandene Backups je Ziel anzeigen, öffnen, löschen und wiederherstellen – in einen Ordner oder an den Originalort.
+  - Zeitplan täglich/wöchentlich per systemd-Timer (`tuxdex --backup`), läuft auch ohne Fenster und holt verpasste Termine nach.
+- Taskmanager → System: **Versionsstand** von Grafiktreiber (NVIDIA/Mesa/Vulkan), CPU-Microcode, Mainboard/BIOS (mit Alter), Kernel und Firmware (fwupd) – inkl. „Update da“ und „Neustart nötig“.
+- Sicherheit: **Leak-Test & VPN-Erkennung** – DNS-Leak-Test, welche DNS-Server Webseiten sehen, ob die IP als VPN (mit Anbieter), Proxy, Tor oder Rechenzentrum erkannt wird, und ob sie auf Sperrlisten steht.
+- Sicherheits-Check zeigt einen eingestellten **Proxy** (Umgebungsvariablen, GNOME, KDE).
 - Sicherheits-Check zeigt den aktuellen **DNS-Server**: Anbieter (z. B. Router, Cloudflare, Mullvad), Verbindung und ob die Anfragen verschlüsselt (DNS-over-TLS) oder durch den VPN-Tunnel laufen.
 - Sicherheits-Check: **Bekannte Sicherheitslücken** über `arch-audit` (optional) – zeigt, welche Pakete ein Update mit Fix haben.
 - Mullvad verbunden, aber Kill-Switch aus: Hinweis mit Knopf „Kill-Switch an“.
