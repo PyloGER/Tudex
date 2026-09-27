@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.6"
+APP_VERSION = "1.6.0-beta.7"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -290,6 +290,10 @@ QToolTip { background: $bg2; color: $ink; border: 1px solid $line; padding: 4px 
 /* Panels */
 #Panel { background: $bg2; border: 1px solid $line; border-radius: 10px; }
 #PanelTitle { font-weight: 600; background: transparent; }
+#Panel[clickable="true"]:hover { border-color: $line_strong; }
+#Panel[clickable="true"]:focus { border: 2px solid $focus; }
+#Panel[selected="true"], #Panel[selected="true"]:hover { border: 1px solid $accent; background: $bg3; }
+#KvValue { font-family: "$mono"; }
 #Panel QLabel, #Panel QCheckBox { background: transparent; }
 
 /* Buttons */
@@ -4306,6 +4310,29 @@ class StatTile(QFrame):
             self.big.setObjectName("MidValue")
         lay.addWidget(self.spark)
 
+    def make_clickable(self, on_click):
+        """Kachel öffnet per Klick (oder Enter/Leertaste) die Detail-Ansicht."""
+        self._on_click = on_click
+        self.setProperty("clickable", True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.TabFocus)
+        self.setToolTip("Anklicken für Details")
+
+    def set_selected(self, on):
+        self.setProperty("selected", on)
+        repolish(self)
+
+    def mousePressEvent(self, e):
+        if getattr(self, "_on_click", None) and e.button() == Qt.LeftButton:
+            self._on_click()
+        super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        if getattr(self, "_on_click", None) and e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self._on_click()
+            return
+        super().keyPressEvent(e)
+
     def set(self, big, sub, value=None):
         self.big.setText(big)
         self.sub.setText(sub)
@@ -4359,6 +4386,129 @@ class _Spark(QWidget):
         p.setPen(Qt.NoPen)
         p.drawEllipse(QRectF(pts[-1][0] - 3, pts[-1][1] - 3, 6, 6))
         p.end()
+
+
+def clear_layout(lay):
+    while lay.count():
+        it = lay.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
+        elif it.layout():
+            clear_layout(it.layout())
+
+
+class DetailPanel(QFrame):
+    """Details zur angeklickten Leistungs-Kachel: Kennzahlen oben, Eigenschaften darunter."""
+    COLS = 4
+
+    def __init__(self, on_close, on_device):
+        super().__init__()
+        self.setObjectName("Panel")
+        self._keys = None
+        self._cells = {}
+        self._bars = []
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 16, 16)
+        outer.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.title = Label("", "PanelTitle")
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.dev = QComboBox()
+        self.dev.setMinimumWidth(220)
+        self.dev.hide()
+        self.dev.currentIndexChanged.connect(lambda _: on_device(self.dev.currentData()))
+        head.addWidget(self.dev)
+        head.addWidget(Button("Schließen", "ghost", on_close, "Details ausblenden (oder Kachel erneut anklicken)"))
+        outer.addLayout(head)
+        self.stats = QGridLayout()
+        self.stats.setHorizontalSpacing(24)
+        self.stats.setVerticalSpacing(12)
+        outer.addLayout(self.stats)
+        self.sep = QFrame()
+        self.sep.setFixedHeight(1)
+        self.sep.setStyleSheet(f"background: {COLORS['line']};")
+        outer.addWidget(self.sep)
+        self.kv = QGridLayout()
+        self.kv.setHorizontalSpacing(24)
+        self.kv.setVerticalSpacing(6)
+        outer.addLayout(self.kv)
+        self.bar_title = Label("", "FieldLabel")
+        outer.addWidget(self.bar_title)
+        self.bar_box = QVBoxLayout()
+        self.bar_box.setSpacing(10)
+        outer.addLayout(self.bar_box)
+        self.hint = Label("", "Hint", wrap=True)
+        outer.addWidget(self.hint)
+
+    def set_devices(self, items, current):
+        """items: [(Anzeige, Schlüssel)] – Auswahl nur bei mehreren Geräten."""
+        self.dev.blockSignals(True)
+        if [self.dev.itemData(i) for i in range(self.dev.count())] != [k for _, k in items]:
+            self.dev.clear()
+            for text, key in items:
+                self.dev.addItem(text, key)
+        i = self.dev.findData(current)
+        if i >= 0:
+            self.dev.setCurrentIndex(i)
+        self.dev.setVisible(len(items) > 1)
+        self.dev.blockSignals(False)
+
+    def loading(self, title):
+        self.title.setText(title)
+        self._keys = None
+        clear_layout(self.stats)
+        clear_layout(self.kv)
+        clear_layout(self.bar_box)
+        self._bars = []
+        self.bar_title.hide()
+        self.hint.setText("Wird ermittelt …")
+        self.dev.hide()
+
+    def show_data(self, title, stats, kv, bars=(), bar_title="", hint=""):
+        self.title.setText(title)
+        keys = ([k for k, _ in stats], [k for k, _ in kv], len(bars))
+        if keys != self._keys:
+            self._keys = keys
+            clear_layout(self.stats)
+            clear_layout(self.kv)
+            clear_layout(self.bar_box)
+            self._cells = {}
+            for i, (k, _) in enumerate(stats):
+                box = QVBoxLayout()
+                box.setSpacing(2)
+                box.addWidget(Label(k.upper(), "FieldLabel"))
+                v = Label("", "MidValue")
+                box.addWidget(v)
+                self._cells[("s", k)] = v
+                self.stats.addLayout(box, i // self.COLS, i % self.COLS)
+            for c in range(self.COLS):
+                self.stats.setColumnStretch(c, 1)
+            for i, (k, _) in enumerate(kv):
+                self.kv.addWidget(Label(k, "Muted"), i, 0, Qt.AlignTop)
+                v = Label("", "KvValue", wrap=True)
+                v.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                self._cells[("k", k)] = v
+                self.kv.addWidget(v, i, 1)
+            self.kv.setColumnStretch(1, 1)
+            self._bars = []
+            for _ in bars:
+                b = UsageBar("", 0, 0, unit="B")
+                self._bars.append(b)
+                self.bar_box.addWidget(b)
+        for k, v in stats:
+            self._cells[("s", k)].setText(str(v))
+        for k, v in kv:
+            self._cells[("k", k)].setText(str(v))
+        for b, (label, used, total) in zip(self._bars, bars):
+            b.label, b.used, b.total = label, used or 0, total or 0
+            b.update()
+        self.sep.setVisible(bool(stats) and bool(kv))
+        self.bar_title.setText(bar_title.upper())
+        self.bar_title.setVisible(bool(bars) and bool(bar_title))
+        self.hint.setText(hint)
+        self.hint.setVisible(bool(hint))
 
 
 # --------------------------------------------------------------------------
@@ -4562,6 +4712,375 @@ def batteries():
 
 BAT_STATUS = {"Charging": "lädt", "Discharging": "Akkubetrieb", "Full": "voll", "Not charging": "lädt nicht",
               "Unknown": "unbekannt"}
+
+
+# --------------------------------------------------------------------------
+# Detail-Infos für die Leistungsansicht (Kachel anklicken) – ohne root
+# --------------------------------------------------------------------------
+
+def _size_str(s):
+    """'32K' / '1024K' / '16M' aus sysfs → Bytes"""
+    m = re.match(r"(\d+)\s*([KMG]?)", s or "")
+    if not m:
+        return 0
+    return int(m.group(1)) * {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}[m.group(2)]
+
+
+def fmt_ghz(khz):
+    return f"{khz / 1e6:.2f} GHz" if khz else "—"
+
+
+def fmt_uptime(secs):
+    d, rem = divmod(int(secs), 86400)
+    h, rem = divmod(rem, 3600)
+    return f"{d}:{h:02d}:{rem // 60:02d}:{rem % 60:02d}"
+
+
+def _cmd_out(cmd, timeout=4):
+    if not which(cmd[0]):
+        return ""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+_CPU_STATIC = None
+
+
+def cpu_static():
+    """Einmal ermittelte CPU-Daten: Modell, Takt, Sockel, Kerne, Caches, Virtualisierung."""
+    global _CPU_STATIC
+    if _CPU_STATIC is not None:
+        return _CPU_STATIC
+    base = "/sys/devices/system/cpu"
+    info = _read("/proc/cpuinfo")
+    flags = next((l.split(":", 1)[1].split() for l in info.splitlines() if l.startswith(("flags", "Features"))), [])
+    sockets = {l.split(":")[1].strip() for l in info.splitlines() if l.startswith("physical id")}
+    cores, threads = cpu_threads_cores()
+    c0 = f"{base}/cpu0/cpufreq"
+    base_khz = next((int(v) for v in (_first_line(f"{c0}/base_frequency"),
+                                      _first_line(f"{c0}/amd_pstate_nominal_freq"),
+                                      _first_line(f"{c0}/bios_limit")) if v.isdigit()), None)
+    max_khz = _first_line(f"{c0}/cpuinfo_max_freq")
+    # Caches: je (Ebene, Typ) die Summe aller unterschiedlichen Instanzen
+    caches, seen = {}, set()
+    try:
+        cpus = [d for d in os.listdir(base) if re.match(r"cpu\d+$", d)]
+    except Exception:
+        cpus = []
+    for c in cpus:
+        cdir = f"{base}/{c}/cache"
+        try:
+            idx = [d for d in os.listdir(cdir) if d.startswith("index")]
+        except Exception:
+            continue
+        for i in idx:
+            lvl, typ = _first_line(f"{cdir}/{i}/level"), _first_line(f"{cdir}/{i}/type")
+            shared = _first_line(f"{cdir}/{i}/shared_cpu_list")
+            key = (lvl, typ, shared)
+            if not lvl or key in seen:
+                continue
+            seen.add(key)
+            name = f"L{lvl}"
+            caches[name] = caches.get(name, 0) + _size_str(_first_line(f"{cdir}/{i}/size"))
+    virt = "AMD-V" if "svm" in flags else "Intel VT-x" if "vmx" in flags else None
+    if virt and os.path.exists("/dev/kvm"):
+        virt = "KVM / " + virt
+    vm = _cmd_out(["systemd-detect-virt", "--vm"]).strip()
+    if not vm:
+        vm = "ja" if "hypervisor" in flags else "none"
+    _CPU_STATIC = {
+        "model": cpu_model(), "base": base_khz, "max": int(max_khz) if max_khz.isdigit() else None,
+        "sockets": len(sockets) or 1, "cores": cores, "threads": threads, "caches": caches,
+        "virt": virt or "nicht unterstützt", "vm": "Nein" if vm == "none" else f"Ja ({vm})",
+        "driver": _first_line(f"{c0}/scaling_driver") or "—",
+    }
+    return _CPU_STATIC
+
+
+def cpu_live():
+    c0 = "/sys/devices/system/cpu/cpu0/cpufreq"
+    fnr = _read("/proc/sys/fs/file-nr").split()
+    boost = _first_line("/sys/devices/system/cpu/cpufreq/boost")
+    return {"governor": _first_line(f"{c0}/scaling_governor") or "—",
+            "epp": _first_line(f"{c0}/energy_performance_preference") or "—",
+            "handles": int(fnr[0]) if fnr and fnr[0].isdigit() else None,
+            "boost": {"1": "an", "0": "aus"}.get(boost, "—")}
+
+
+def fans():
+    """[(Name, Chip, U/min)] aus /sys/class/hwmon"""
+    out = []
+    base = "/sys/class/hwmon"
+    try:
+        mons = sorted(os.listdir(base))
+    except Exception:
+        return out
+    for m in mons:
+        chip = _first_line(f"{base}/{m}/name")
+        try:
+            files = sorted(f for f in os.listdir(f"{base}/{m}") if re.match(r"fan\d+_input$", f))
+        except Exception:
+            continue
+        for f in files:
+            v = _first_line(f"{base}/{m}/{f}")
+            if not v.isdigit():
+                continue
+            label = _first_line(f"{base}/{m}/{f.replace('_input', '_label')}")
+            out.append((label or f"Lüfter {len(out)}", chip, int(v)))
+    return out
+
+
+_MEM_HW = None
+
+
+def memory_hw():
+    """Takt, Steckplätze, Bauform, Typ – aus den udev-Daten der DMI-Tabelle (lesbar ohne root)."""
+    global _MEM_HW
+    if _MEM_HW is not None:
+        return _MEM_HW
+    props = {}
+    for line in _cmd_out(["udevadm", "info", "--query=property", "--path=/sys/devices/virtual/dmi/id"]).splitlines():
+        k, _, v = line.partition("=")
+        props[k] = v
+    devs = {}
+    for k, v in props.items():
+        m = re.match(r"MEMORY_DEVICE_(\d+)_(\w+)$", k)
+        if m:
+            devs.setdefault(m.group(1), {})[m.group(2)] = v
+    present = [d for d in devs.values() if d.get("PRESENT", "1") != "0" and d.get("SIZE", "0") not in ("0", "")]
+    hw = {}
+    if devs:
+        hw["slots"] = f"{len(present)} von {props.get('MEMORY_ARRAY_NUM_DEVICES') or len(devs)}"
+    if present:
+        d = present[0]
+        speed = d.get("CONFIGURED_SPEED_MTS") or d.get("SPEED_MTS")
+        if speed:
+            hw["speed"] = f"{speed} MT/s"
+        for key, name in (("TYPE", "type"), ("FORM_FACTOR", "form"), ("MANUFACTURER", "vendor")):
+            if d.get(key) and d[key] not in ("Unknown", "Other"):
+                hw[name] = d[key]
+            elif d.get(key):
+                hw[name] = {"Other": "Sonstige (meist verlötet)", "Unknown": "unbekannt"}[d[key]]
+    _MEM_HW = hw
+    return hw
+
+
+def zram_stats():
+    """(Originalgröße, komprimiert) aller zram-Geräte"""
+    orig = comp = 0
+    try:
+        devs = [d for d in os.listdir("/sys/block") if d.startswith("zram")]
+    except Exception:
+        devs = []
+    for d in devs:
+        f = _read(f"/sys/block/{d}/mm_stat").split()
+        if len(f) >= 3:
+            orig += int(f[0])
+            comp += int(f[2])
+    return (orig, comp) if devs else None
+
+
+def swap_devices():
+    """[(Gerät, Typ, Größe, belegt, Priorität)] aus /proc/swaps"""
+    out = []
+    for line in _read("/proc/swaps").splitlines()[1:]:
+        f = line.split()
+        if len(f) >= 5:
+            out.append((f[0], f[1], int(f[2]) * 1024, int(f[3]) * 1024, f[4]))
+    return out
+
+
+def diskstats():
+    """{Laufwerk: (gelesen B, geschrieben B, E/A-Zeit ms, Anfragen, Wartezeit ms)} physischer Laufwerke"""
+    out = {}
+    for line in _read("/proc/diskstats").splitlines():
+        f = line.split()
+        if len(f) > 13 and re.match(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|mmcblk\d+|hd[a-z]+)$", f[2]):
+            out[f[2]] = (int(f[5]) * 512, int(f[9]) * 512, int(f[12]),
+                         int(f[3]) + int(f[7]), int(f[6]) + int(f[10]))
+    return out
+
+
+_DISK_STATIC = {}
+
+
+def disk_static(name):
+    """Größe, Modell, Seriennummer, Typ, Partitionen eines Laufwerks (30 s zwischengespeichert)"""
+    hit = _DISK_STATIC.get(name)
+    if hit and time.time() - hit[0] < 30:
+        return hit[1]
+    res = _disk_static(name)
+    _DISK_STATIC[name] = (time.time(), res)
+    return res
+
+
+def _disk_static(name):
+    sysd = f"/sys/block/{name}"
+    size = _first_line(f"{sysd}/size")
+    rot = _first_line(f"{sysd}/queue/rotational")
+    typ = "NVMe" if name.startswith("nvme") else "SD/eMMC" if name.startswith("mmcblk") else \
+        "Festplatte (HDD)" if rot == "1" else "SSD"
+    if _first_line(f"{sysd}/removable") == "1" or "usb" in os.path.realpath(sysd):
+        typ += " · USB/wechselbar"
+    wwn = _first_line(f"{sysd}/device/wwid") or _first_line(f"{sysd}/wwid")
+    parts = []
+    try:
+        data = json.loads(_cmd_out(["lsblk", "-J", "-b", "-o", "NAME,PATH,FSTYPE,MOUNTPOINT,FSUSED,FSSIZE,SIZE",
+                                    f"/dev/{name}"]) or "{}")
+        stack = list(data.get("blockdevices", [{}])[0].get("children", []))
+        while stack:
+            c = stack.pop(0)
+            stack[0:0] = c.get("children", []) or []
+            parts.append({"path": c.get("path") or c.get("name"), "fs": c.get("fstype") or "",
+                          "mount": c.get("mountpoint") or "", "used": c.get("fsused"),
+                          "fssize": c.get("fssize"), "size": c.get("size")})
+    except Exception:
+        pass
+    return {"size": int(size) * 512 if size.isdigit() else None,
+            "model": (_first_line(f"{sysd}/device/model") or "").strip() or "—",
+            "serial": _first_line(f"{sysd}/device/serial") or "—",
+            "wwn": wwn or "—", "type": typ, "parts": parts,
+            "system": any(p["mount"] == "/" for p in parts),
+            "formatted": sum(int(p["fssize"]) for p in parts if str(p.get("fssize") or "").isdigit())}
+
+
+def _hwmon_dir(dev):
+    try:
+        h = os.listdir(f"{dev}/hwmon")
+        return f"{dev}/hwmon/{h[0]}" if h else None
+    except Exception:
+        return None
+
+
+def _dpm(path):
+    """(aktuell, höchster) Takt aus pp_dpm_sclk/mclk-Zeilen wie '1: 2100Mhz *'"""
+    cur = top = None
+    for line in _read(path).splitlines():
+        m = re.search(r"(\d+)\s*Mhz", line, re.I)
+        if m:
+            v = int(m.group(1))
+            top = max(top or 0, v)
+            if "*" in line:
+                cur = v
+    return cur, top
+
+
+_GPU_STATIC = {}
+
+
+def gpu_static(card):
+    if card in _GPU_STATIC:
+        return _GPU_STATIC[card]
+    dev = f"/sys/class/drm/{card}/device"
+    real = os.path.realpath(dev)
+    drv = os.path.basename(os.path.realpath(f"{dev}/driver")) if os.path.exists(f"{dev}/driver") else "—"
+
+    def link(kind):
+        sp, wd = _first_line(f"{dev}/{kind}_link_speed"), _first_line(f"{dev}/{kind}_link_width")
+        gen = {"2.5": 1, "5.0": 2, "8.0": 3, "16.0": 4, "32.0": 5, "64.0": 6}
+        m = re.match(r"([\d.]+)", sp)
+        if not m or not wd:
+            return None
+        g = gen.get(m.group(1))
+        return f"PCIe Gen {g} x{wd}" if g else f"{sp} x{wd}"
+    gl = ""
+    out = _cmd_out(["glxinfo", "-B"], 5)
+    m = re.search(r"OpenGL core profile version string:\s*([\d.]+)", out) or \
+        re.search(r"OpenGL version string:\s*([\d.]+)", out)
+    if m:
+        gl = m.group(1)
+    vk = ""
+    m = re.search(r"apiVersion\s*=\s*([\d.]+)", _cmd_out(["vulkaninfo", "--summary"], 6))
+    if m:
+        vk = m.group(1)
+    st = {"driver": drv, "bus": os.path.basename(real) if re.match(r"[0-9a-f]{4}:", os.path.basename(real)) else "—",
+          "link": link("current"), "link_max": link("max"), "gl": gl or "—", "vk": vk or "—"}
+    _GPU_STATIC[card] = st
+    return st
+
+
+def gpu_live(g, nv_idx=0):
+    """Takt, Leistung, Speicher, Video-Engines, Temperatur, Lüfter einer Grafikkarte"""
+    card = g.get("card", "")
+    dev = f"/sys/class/drm/{card}/device"
+    d = {}
+    if card.startswith("card"):
+        d["clk"], d["clk_max"] = _dpm(f"{dev}/pp_dpm_sclk")
+        d["mclk"], d["mclk_max"] = _dpm(f"{dev}/pp_dpm_mclk")
+        if d["clk"] is None:   # Intel
+            cur, top = _first_line(f"/sys/class/drm/{card}/gt_act_freq_mhz") or \
+                _first_line(f"/sys/class/drm/{card}/gt_cur_freq_mhz"), _first_line(f"/sys/class/drm/{card}/gt_max_freq_mhz")
+            if cur.isdigit():
+                d["clk"], d["clk_max"] = int(cur), int(top) if top.isdigit() else None
+        hw = _hwmon_dir(dev)
+        if hw:
+            for n in ("power1_average", "power1_input"):
+                v = _first_line(f"{hw}/{n}")
+                if v.isdigit():
+                    d["power"] = int(v) / 1e6
+                    break
+            cap = _first_line(f"{hw}/power1_cap")
+            if cap.isdigit():
+                d["power_cap"] = int(cap) / 1e6
+            t = _first_line(f"{hw}/temp1_input")
+            if t.lstrip("-").isdigit():
+                d["temp"] = int(t) / 1000
+            fan = _first_line(f"{hw}/fan1_input")
+            if fan.isdigit():
+                d["fan"] = f"{fan} U/min"
+    if g.get("name", "").startswith("NVIDIA") and which("nvidia-smi"):
+        q = ("clocks.gr,clocks.max.gr,clocks.mem,clocks.max.mem,power.draw,power.limit,utilization.encoder,"
+             "utilization.decoder,temperature.gpu,fan.speed,pcie.link.gen.current,pcie.link.gen.max,"
+             "pcie.link.width.current,pcie.link.width.max,driver_version,pci.bus_id")
+        out = _cmd_out(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"])
+        rows = [[x.strip() for x in l.split(",")] for l in out.strip().splitlines()]
+        nv = [x for x in rows if len(x) == 16]
+        if nv:
+            r = nv[min(nv_idx, len(nv) - 1)]
+
+            def num(x):
+                try:
+                    return float(x)
+                except ValueError:
+                    return None
+            d.update({"clk": num(r[0]), "clk_max": num(r[1]), "mclk": num(r[2]), "mclk_max": num(r[3]),
+                      "power": num(r[4]), "power_cap": num(r[5]), "enc": num(r[6]), "dec": num(r[7]),
+                      "temp": num(r[8]), "nv_driver": r[14], "nv_bus": r[15]})
+            if num(r[9]) is not None:
+                d["fan"] = f"{r[9]} %"
+            if r[10].isdigit():
+                d["nv_link"] = f"PCIe Gen {r[10]} x{r[12]}"
+                d["nv_link_max"] = f"PCIe Gen {r[11]} x{r[13]}"
+    return d
+
+
+def net_static(name):
+    speed = _first_line(f"/sys/class/net/{name}/speed")
+    return {"speed": f"{int(speed) / 1000:g} Gbit/s" if speed.isdigit() and int(speed) >= 1000
+            else f"{speed} Mbit/s" if speed.isdigit() and int(speed) > 0 else "—",
+            "mtu": _first_line(f"/sys/class/net/{name}/mtu") or "—",
+            "mac": _first_line(f"/sys/class/net/{name}/address") or "—",
+            "driver": os.path.basename(os.path.realpath(f"/sys/class/net/{name}/device/driver"))
+            if os.path.exists(f"/sys/class/net/{name}/device/driver") else "—"}
+
+
+def battery_extra(name):
+    p = f"/sys/class/power_supply/{name}"
+
+    def num(n):
+        v = _first_line(f"{p}/{n}")
+        return int(v) if v.lstrip("-").isdigit() else None
+    volt = num("voltage_now")
+    e_full, e_design = num("energy_full"), num("energy_full_design")
+    if e_full is None and num("charge_full") and volt:
+        e_full = num("charge_full") * volt / 1e6
+        e_design = (num("charge_full_design") or 0) * volt / 1e6 or None
+    return {"cycles": num("cycle_count"), "tech": _first_line(f"{p}/technology") or "—",
+            "volt": volt / 1e6 if volt else None,
+            "full": e_full / 1e6 if e_full else None, "design": e_design / 1e6 if e_design else None,
+            "limit": num("charge_control_end_threshold")}
 
 
 def net_counters():
@@ -5585,12 +6104,27 @@ class TaskTab(Page):
         self.t_swap = StatTile("Swap")
         self.t_sys = StatTile("System")
         self.t_sys.spark.hide()
-        for i, t in enumerate((self.t_cpu, self.t_ram, self.t_gpu, self.t_net, self.t_disk, self.t_bat,
-                               self.t_swap, self.t_sys)):
+        self.perf_tiles = {"cpu": self.t_cpu, "ram": self.t_ram, "gpu": self.t_gpu, "net": self.t_net,
+                           "disk": self.t_disk, "bat": self.t_bat, "swap": self.t_swap, "sys": self.t_sys}
+        for i, (kind, t) in enumerate(self.perf_tiles.items()):
+            t.make_clickable(lambda k=kind: self.toggle_detail(k))
             ll.addWidget(t, i // 3, i % 3)
         for c in range(3):
             ll.setColumnStretch(c, 1)
-        ll.setRowStretch(3, 1)
+        self.detail = DetailPanel(lambda: self.toggle_detail(None), self._detail_device)
+        self.detail.hide()
+        ll.addWidget(self.detail, 3, 0, 1, 3)
+        self.detail_hint = Label("Kachel anklicken, um Details zu sehen – z. B. Caches, Takt und Virtualisierung "
+                                 "beim Prozessor, Partitionen beim Datenträger, Takt und Leistung bei der Grafik.",
+                                 "Hint", wrap=True)
+        ll.addWidget(self.detail_hint, 4, 0, 1, 3)
+        ll.setRowStretch(5, 1)
+        self.detail_kind = None
+        self.detail_dev = {}      # Art → gewähltes Gerät (Laufwerk, Grafikkarte, Schnittstelle)
+        self.detail_prev = {}     # Art → (Zeit, Zähler) für Raten
+        self.detail_busy = False
+        self.last_snap = None
+        self.cpu_pct = None
         self.views.addWidget(lv)
 
         # ---------- System ----------
@@ -5887,6 +6421,7 @@ class TaskTab(Page):
             pio = self.prev_io.get(pid)
             p["io_rate"] = (p["io"] - pio) / secs if (p["io"] is not None and pio is not None) else \
                 (None if p["io"] is None else 0)
+        self.cpu_pct = cpu_pct
         self.prev_total = (s["total"], s["idle"], s["t"])
         self.prev_ticks = {pid: p["ticks"] for pid, p in procs.items()}
         self.prev_io = {pid: p["io"] for pid, p in procs.items() if p["io"] is not None}
@@ -5977,6 +6512,292 @@ class TaskTab(Page):
                        + (f"{d} T " if d else "") + f"{h} Std {rem // 60} Min")
         if self.views.currentIndex() == 0:
             self._render()
+        self.last_snap = s
+        if self.detail_kind and self.views.currentIndex() == 1:
+            self.refresh_detail()
+
+    # ---- Detail-Ansicht (Kachel angeklickt) --------------------------------
+
+    DETAIL_TITLES = {"cpu": "Prozessor", "ram": "Arbeitsspeicher", "gpu": "Grafik", "net": "Netzwerk",
+                     "disk": "Datenträger", "bat": "Akku", "swap": "Swap", "sys": "System & Lüfter"}
+
+    def toggle_detail(self, kind):
+        if kind == self.detail_kind:
+            kind = None
+        self.detail_kind = kind
+        for k, t in self.perf_tiles.items():
+            t.set_selected(k == kind)
+        self.detail_hint.setVisible(not kind)
+        if not kind:
+            self.detail.hide()
+            return
+        self.detail.loading(self.DETAIL_TITLES[kind])
+        self.detail.show()
+        self.refresh_detail()
+        page = self.detail.parent()
+        while page and not isinstance(page, QScrollArea):
+            page = page.parent()
+        if page:
+            QTimer.singleShot(50, lambda: page.ensureWidgetVisible(self.detail, 0, 24))
+
+    def _detail_device(self, key):
+        if self.detail_kind and key is not None:
+            self.detail_dev[self.detail_kind] = key
+            self.detail_prev.pop(self.detail_kind, None)
+            self.detail.loading(self.DETAIL_TITLES[self.detail_kind])
+            self.refresh_detail()
+
+    def refresh_detail(self):
+        kind, s = self.detail_kind, self.last_snap
+        if not kind or not s or self.detail_busy:
+            return
+        self.detail_busy = True
+        dev = self.detail_dev.get(kind)
+        procs = s["procs"]
+        extra = {"threads": sum(p.get("threads", 0) for p in procs.values()), "n_procs": len(procs),
+                 "n_apps": sum(1 for p in procs.values() if p.get("app")), "cpu_pct": self.cpu_pct}
+
+        def worker():
+            try:
+                res = getattr(self, f"_detail_{kind}")(s, dev, extra)
+            except Exception as e:
+                res = (self.DETAIL_TITLES[kind], [], [("Fehler", str(e))], [], "", "", None)
+            ui(lambda: self._show_detail(kind, res))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_detail(self, kind, res):
+        self.detail_busy = False
+        if kind != self.detail_kind:
+            return
+        title, stats, kv, bars, bar_title, hint, devices = res
+        if devices:
+            items, cur = devices
+            self.detail_dev[kind] = cur
+            self.detail.set_devices(items, cur)
+        else:
+            self.detail.set_devices([], None)
+        self.detail.show_data(title, stats, kv, bars, bar_title, hint)
+
+    def _rate(self, kind, key, counters):
+        """Raten pro Sekunde aus Zählern (Tupel) seit dem letzten Aufruf – None beim ersten Mal."""
+        now = time.time()
+        prev = self.detail_prev.get(kind)
+        self.detail_prev[kind] = (key, now, counters)
+        if not prev or prev[0] != key or now - prev[1] <= 0.2:
+            return None, 0
+        dt = now - prev[1]
+        return tuple(max(0, a - b) for a, b in zip(counters, prev[2])), dt
+
+    def _detail_cpu(self, s, dev, x):
+        st, live = cpu_static(), cpu_live()
+        avg, _ = s["mhz"]
+        temp = s["temps"].get("cpu")
+        stats = [("Auslastung", f"{x['cpu_pct']:.0f} %" if x["cpu_pct"] is not None else "—"),
+                 ("Geschwindigkeit", f"{avg / 1000:.2f} GHz" if avg else "—"),
+                 ("Temperatur", f"{temp:.0f} °C" if temp is not None else "—"),
+                 ("Betriebszeit", fmt_uptime(s["up"])),
+                 ("Prozesse", x["n_procs"]), ("Threads", x["threads"]),
+                 ("Handles", live["handles"] if live["handles"] is not None else "—"),
+                 ("Last 1 / 5 / 15 Min", " / ".join(s["load"]))]
+        c = st["caches"]
+        kv = [("Modell", st["model"]),
+              ("Basisgeschwindigkeit", fmt_ghz(st["base"])),
+              ("Max. Geschwindigkeit", fmt_ghz(st["max"])),
+              ("Sockets", st["sockets"]), ("Kerne", st["cores"]), ("Virtuelle Prozessoren", st["threads"]),
+              ("Virtualisierung", st["virt"]), ("Virtuelle Maschine", st["vm"]),
+              ("L1-Cache", fmt_bytes(c.get("L1")) if c.get("L1") else "—"),
+              ("L2-Cache", fmt_bytes(c.get("L2")) if c.get("L2") else "—"),
+              ("L3-Cache", fmt_bytes(c.get("L3")) if c.get("L3") else "—"),
+              ("CPUfreq-Treiber", st["driver"]), ("CPUfreq-Regler", live["governor"]),
+              ("Energiemodus", live["epp"]), ("Turbo / Boost", live["boost"])]
+        return (f"Prozessor · {st['model']}", stats, kv, [], "",
+                "Handles = geöffnete Dateien und Verbindungen im ganzen System. Die Last zeigt, wie viele Prozesse "
+                "im Schnitt auf Rechenzeit warten – mehr als die Zahl der Threads heißt Überlastung.", None)
+
+    def _detail_ram(self, s, dev, x):
+        m = s["mem"]
+        total, avail = m.get("MemTotal", 0), m.get("MemAvailable", 0)
+        cache = m.get("Cached", 0) + m.get("Buffers", 0) + m.get("SReclaimable", 0)
+        swt, swf = m.get("SwapTotal", 0), m.get("SwapFree", 0)
+        z = zram_stats()
+        hw = memory_hw()
+        stats = [("In Verwendung", fmt_bytes(total - avail)), ("Verfügbar", fmt_bytes(avail)),
+                 ("Zugesichert", f"{fmt_bytes(m.get('Committed_AS'))} / {fmt_bytes(m.get('CommitLimit'))}"),
+                 ("Im Cache", fmt_bytes(cache)),
+                 ("Verwendeter Swap", fmt_bytes(swt - swf)), ("Verfügbarer Swap", fmt_bytes(swf))]
+        if z:
+            stats += [("Komprimiert (zram)", fmt_bytes(z[1])), ("Ersparnis", fmt_bytes(max(0, z[0] - z[1])))]
+        kv = [("Gesamt", fmt_bytes(total)),
+              ("Geschwindigkeit", hw.get("speed", "—")), ("Steckplätze verwendet", hw.get("slots", "—")),
+              ("Formfaktor", hw.get("form", "—")), ("Typ", hw.get("type", "—")),
+              ("Hersteller", hw.get("vendor", "—")),
+              ("Gemeinsam genutzt", fmt_bytes(m.get("Shmem"))), ("Kernel (Slab)", fmt_bytes(m.get("Slab"))),
+              ("Noch zu schreiben", fmt_bytes(m.get("Dirty")))]
+        return ("Arbeitsspeicher", stats, kv, [("Belegt", total - avail, total)], "Belegung",
+                "„Im Cache“ ist Speicher für zuletzt gelesene Dateien – er wird sofort freigegeben, wenn Programme "
+                "ihn brauchen. „Zugesichert“ ist, was Programme angefordert haben (auch ungenutzt)."
+                + ("" if hw else " Takt und Steckplätze meldet dieses System nicht (udev-DMI-Daten fehlen)."), None)
+
+    def _detail_disk(self, s, dev, x):
+        stats_all = diskstats()
+        if not stats_all:
+            return ("Datenträger", [], [("Hinweis", "keine Laufwerke gefunden")], [], "", "", None)
+        names = sorted(stats_all, key=lambda n: (not n.startswith("nvme"), n))
+        if dev not in stats_all:
+            dev = next((n for n in names if disk_static(n)["system"]), names[0])
+        st = disk_static(dev)
+        rd, wr, io_ms, ios, wait_ms = stats_all[dev]
+        d, dt = self._rate("disk", dev, (rd, wr, io_ms, ios, wait_ms))
+        temp = None
+        for base in (f"/sys/block/{dev}/device", f"/sys/block/{dev}/device/device"):
+            hw = _hwmon_dir(base)
+            if hw and _first_line(f"{hw}/temp1_input").isdigit():
+                temp = int(_first_line(f"{hw}/temp1_input")) / 1000
+                break
+        stats = [("Lesegeschwindigkeit", f"{fmt_bytes(d[0] / dt)}/s" if d else "…"),
+                 ("Schreibgeschwindigkeit", f"{fmt_bytes(d[1] / dt)}/s" if d else "…"),
+                 ("Aktive Zeit", f"{min(100, d[2] / (dt * 10)):.0f} %" if d else "…"),
+                 ("Ø Antwortzeit", (f"{d[4] / d[3]:.2f} ms" if d[3] else "0 ms") if d else "…"),
+                 ("Insgesamt gelesen", fmt_bytes(rd)), ("Insgesamt geschrieben", fmt_bytes(wr))]
+        if temp is not None:
+            stats.append(("Temperatur", f"{temp:.0f} °C"))
+        kv = [("Modell", st["model"]), ("Kapazität", fmt_bytes(st["size"])),
+              ("Formatiert", fmt_bytes(st["formatted"]) if st["formatted"] else "—"),
+              ("Systemdatenträger", "Ja" if st["system"] else "Nein"), ("Typ", st["type"]),
+              ("WWN", st["wwn"]), ("Seriennummer", st["serial"])]
+        bars = [(f"{p['path']} · {p['fs'] or '—'}" + (f" · {short_path(p['mount'])}" if p["mount"] else ""),
+                 int(p["used"]), int(p["fssize"]))
+                for p in st["parts"] if str(p.get("fssize") or "").isdigit() and str(p.get("used") or "").isdigit()]
+        items = [(n + (f" · {disk_static(n)['model']}" if disk_static(n)["model"] != "—" else ""), n) for n in names]
+        return (f"Datenträger · {dev}", stats, kv, bars, "Partitionen (eingehängt)",
+                "Aktive Zeit = Anteil der Zeit, in der das Laufwerk beschäftigt war. Werte seit dem Systemstart.",
+                (items, dev))
+
+    def _detail_gpu(self, s, dev, x):
+        gl = s.get("gpus") or []
+        if not gl:
+            return ("Grafik", [], [("Hinweis", "keine Grafikkarte erkannt")], [], "", "", None)
+        cards = [g.get("card") for g in gl]
+        if dev not in cards:
+            dev = next((g["card"] for g in gl if g.get("busy") is not None), cards[0])
+        g = gl[cards.index(dev)]
+        nvs = [gg for gg in gl if gg.get("name", "").startswith("NVIDIA")]
+        st, lv = gpu_static(dev), gpu_live(g, nvs.index(g) if g in nvs else 0)
+        temp = lv.get("temp", s["temps"].get("gpu") if len(gl) == 1 else None)
+
+        def clk(a, b):
+            if not a:
+                return "—"
+            return f"{a / 1000:.2f} GHz" + (f" / {b / 1000:.2f} GHz" if b else "")
+        stats = [("Auslastung", f"{g['busy']} %" if g.get("busy") is not None else "—"),
+                 ("Taktgeschwindigkeit", clk(lv.get("clk"), lv.get("clk_max"))),
+                 ("Leistungsaufnahme", (f"{lv['power']:.1f} W" + (f" / {lv['power_cap']:.0f} W"
+                                                                   if lv.get("power_cap") else ""))
+                  if lv.get("power") is not None else "—"),
+                 ("Speicherverbrauch", f"{fmt_bytes(g['vram_used'])} / {fmt_bytes(g['vram_total'])}"
+                  if g.get("vram_total") else "—"),
+                 ("Speichertakt", clk(lv.get("mclk"), lv.get("mclk_max"))),
+                 ("Temperatur", f"{temp:.0f} °C" if temp is not None else "—")]
+        if lv.get("enc") is not None:
+            stats += [("Video kodieren", f"{lv['enc']:.0f} %"), ("Video dekodieren", f"{lv['dec']:.0f} %")]
+        if lv.get("fan"):
+            stats.append(("Lüfter", lv["fan"]))
+        kv = [("Modell", g.get("name", "—")),
+              ("Treiber", st["driver"] + (f" {lv['nv_driver']}" if lv.get("nv_driver") else "")),
+              ("OpenGL-Version", st["gl"]), ("Vulkan-Version", st["vk"]),
+              ("PCI-Express-Geschwindigkeit", lv.get("nv_link") or st["link"] or "—"),
+              ("Max. PCI-Express-Geschwindigkeit", lv.get("nv_link_max") or st["link_max"] or "—"),
+              ("PCI-Busadresse", st["bus"] if st["bus"] != "—" else lv.get("nv_bus", "—"))]
+        items = [(gg.get("name", gg.get("card")), gg.get("card")) for gg in gl]
+        hint = "" if (st["gl"] != "—" or st["vk"] != "—") else \
+            "OpenGL- und Vulkan-Version zeigt Tuxdex, wenn mesa-utils (glxinfo) bzw. vulkan-tools installiert sind."
+        return (f"Grafik · {g.get('name', dev)}", stats, kv, [], "", hint, (items, dev))
+
+    def _detail_net(self, s, dev, x):
+        net = {k: v for k, v in s["net"].items() if k != "lo"}
+        if not net:
+            return ("Netzwerk", [], [("Hinweis", "keine Netzwerkschnittstelle gefunden")], [], "", "", None)
+        names = sorted(net, key=lambda n: (_first_line(f"/sys/class/net/{n}/operstate") != "up",
+                                           iface_kind(n) in ("Virtuell",), n))
+        if dev not in net:
+            dev = internet_route_dev() if internet_route_dev() in net else names[0]
+        rx, tx = net[dev]
+        d, dt = self._rate("net", dev, (rx, tx))
+        st = net_static(dev)
+        addrs = self.detail_prev.get(("addr", dev))
+        if not addrs or time.time() - addrs[0] > 30:
+            try:
+                data = json.loads(_cmd_out(["ip", "-j", "addr", "show", "dev", dev]) or "[]")
+                info = data[0].get("addr_info", []) if data else []
+            except Exception:
+                info = []
+            addrs = (time.time(), [f"{a['local']}/{a.get('prefixlen', '')}" for a in info if a.get("family") == "inet"],
+                     [a["local"] for a in info if a.get("family") == "inet6"])
+            self.detail_prev[("addr", dev)] = addrs
+        stats = [("Empfangen", f"{fmt_bytes(d[0] / dt)}/s" if d else "…"),
+                 ("Senden", f"{fmt_bytes(d[1] / dt)}/s" if d else "…"),
+                 ("Insgesamt empfangen", fmt_bytes(rx)), ("Insgesamt gesendet", fmt_bytes(tx))]
+        kv = [("Typ", iface_kind(dev)), ("Status", _first_line(f"/sys/class/net/{dev}/operstate") or "—"),
+              ("Verbindungsgeschwindigkeit", st["speed"]), ("Treiber", st["driver"]),
+              ("MAC-Adresse", st["mac"]), ("MTU", st["mtu"]),
+              ("IPv4", ", ".join(addrs[1]) or "—"), ("IPv6", "\n".join(addrs[2]) or "—")]
+        items = [(f"{n} · {iface_kind(n)}", n) for n in names]
+        return (f"Netzwerk · {dev}", stats, kv, [], "", "Summen seit dem Systemstart.", (items, dev))
+
+    def _detail_bat(self, s, dev, x):
+        bats, ac = s["bat"]
+        if not bats:
+            return ("Akku", [], [("Stromversorgung", "kein Akku – Netzbetrieb")], [], "", "", None)
+        b = bats[0]
+        e = battery_extra(b["name"])
+        rest = "—"
+        if b["hours"]:
+            rest = f"{int(b['hours'])}:{int((b['hours'] % 1) * 60):02d} h"
+        stats = [("Ladestand", f"{b['capacity']} %" if b["capacity"] is not None else "—"),
+                 ("Status", BAT_STATUS.get(b["status"], b["status"])),
+                 ("Leistung", f"{b['watts']:.1f} W" if b["watts"] is not None else "—"),
+                 ("Noch" if b["status"] == "Discharging" else "Voll in", rest),
+                 ("Zustand", f"{b['health']:.0f} %" if b["health"] else "—"),
+                 ("Ladezyklen", e["cycles"] if e["cycles"] is not None else "—")]
+        kv = [("Modell", b["model"] or "—"), ("Technologie", e["tech"]),
+              ("Spannung", f"{e['volt']:.2f} V" if e["volt"] else "—"),
+              ("Kapazität jetzt", f"{e['full']:.1f} Wh" if e["full"] else "—"),
+              ("Kapazität neu", f"{e['design']:.1f} Wh" if e["design"] else "—"),
+              ("Ladegrenze", f"{e['limit']} %" if e["limit"] else "keine"),
+              ("Netzteil", "angeschlossen" if ac else "nicht angeschlossen" if ac is False else "—")]
+        return ("Akku", stats, kv, [], "",
+                "Zustand = heutige volle Kapazität im Vergleich zum Neuzustand.", None)
+
+    def _detail_swap(self, s, dev, x):
+        m = s["mem"]
+        swt, swf = m.get("SwapTotal", 0), m.get("SwapFree", 0)
+        z = zram_stats()
+        devs = swap_devices()
+        stats = [("Belegt", fmt_bytes(swt - swf)), ("Gesamt", fmt_bytes(swt)),
+                 ("Swappiness", _first_line("/proc/sys/vm/swappiness") or "—")]
+        if z:
+            stats += [("Komprimiert (zram)", fmt_bytes(z[1])), ("Ersparnis", fmt_bytes(max(0, z[0] - z[1])))]
+        kv = [(short_path(p), f"{'zram' if 'zram' in p else typ} · Priorität {prio}") for p, typ, _, _, prio in devs] \
+            or [("Swap", "nicht aktiv")]
+        bars = [(short_path(p), used, size) for p, _, size, used, _ in devs]
+        return ("Swap", stats, kv, bars, "Belegung je Gerät",
+                "Swappiness (0–200): je höher, desto früher lagert Linux ungenutzten Speicher aus.", None)
+
+    def _detail_sys(self, s, dev, x):
+        live = cpu_live()
+        boot = datetime.fromtimestamp(time.time() - s["up"]).strftime("%d.%m.%Y %H:%M")
+        stats = [("Prozesse", x["n_procs"]), ("davon Programme", x["n_apps"]), ("Threads", x["threads"]),
+                 ("Handles", live["handles"] if live["handles"] is not None else "—"),
+                 ("Betriebszeit", fmt_uptime(s["up"])), ("Last 1 / 5 / 15 Min", " / ".join(s["load"]))]
+        kv = [("Kernel", os.uname().release), ("Gestartet am", boot)]
+        fl = fans()
+        kv += [(f"Lüfter · {name}", f"{rpm} U/min  ({chip})") for name, chip, rpm in fl] or \
+            [("Lüfter", "keine Drehzahl gemeldet")]
+        for k, v in sorted(s["temps"].items()):
+            kv.append((f"Temperatur · {k.upper()}", f"{v:.0f} °C"))
+        return ("System & Lüfter", stats, kv, [], "",
+                "" if fl else "Lüfterdrehzahlen erscheinen, wenn der Treiber sie meldet (bei vielen Laptops nur mit "
+                "passendem Modul, z. B. thinkpad_acpi, dell-smm-hwmon, asus-wmi oder nct6775).", None)
 
     # ---- Tabelle ----------------------------------------------------------
 

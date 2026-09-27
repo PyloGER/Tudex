@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0-beta.7
+- Taskmanager → Leistung: **Kacheln anklicken für Details** (live, alle 2 s; erneut klicken oder „Schließen“ blendet aus):
+  - **Prozessor**: Geschwindigkeit, Temperatur, Betriebszeit, Prozesse/Threads/Handles, Last; Modell, Basis- und Maximaltakt, Sockel, Kerne, virtuelle Prozessoren, Virtualisierung (KVM / AMD-V / VT-x), virtuelle Maschine, L1/L2/L3-Cache, CPUfreq-Treiber und -Regler, Energiemodus, Boost.
+  - **Arbeitsspeicher**: in Verwendung, verfügbar, zugesichert, im Cache, Swap, zram komprimiert/Ersparnis; Takt (MT/s), belegte Steckplätze, Formfaktor, Typ (z. B. LPDDR5).
+  - **Datenträger** (Auswahl je Laufwerk): Lese-/Schreibtempo, aktive Zeit, Antwortzeit, Summen seit Start, Temperatur; Modell, Kapazität, formatiert, Systemdatenträger, Typ, WWN, Seriennummer, Partitionen mit Belegung.
+  - **Grafik** (Auswahl je Karte): Auslastung, Takt, Leistungsaufnahme, VRAM, Speichertakt, Video kodieren/dekodieren (NVIDIA), Temperatur, Lüfter; Treiber, OpenGL-/Vulkan-Version, PCIe-Geschwindigkeit, PCI-Adresse.
+  - **Netzwerk** (je Schnittstelle), **Akku** (Zyklen, Zustand, Spannung, Ladegrenze), **Swap** (Geräte, Priorität, Swappiness) und **System & Lüfter** (Drehzahlen aller Lüfter, Temperaturen, Kernel, Startzeit).
+- Alles ohne root; Werte, die das System nicht meldet, stehen als „—“.
+
 ## 1.6.0-beta.6
 - **Pop-ups überarbeitet**: kein schwarz hinterlegter Text mehr in Hinweis-, Warn- und Rückfrage-Fenstern (trat unter KDE auf).
 - Flache Symbole in den Tuxdex-Farben statt der Symbole des System-Themes; Buttons in allen Pop-ups im Tuxdex-Stil (Hauptaktion farbig, Abbrechen links, Aktion rechts), mehr Innenabstand.
