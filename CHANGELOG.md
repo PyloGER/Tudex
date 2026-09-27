@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.3
+- Aktualisierung startet erst nach der Admin-Anmeldung (sudo-Passwort). Ohne Anmeldung wird nichts heruntergeladen oder verändert – gilt für GitHub, Datei und Ordner.
+- Neuer Fortschrittsbalken mit Schritt-Anzeige: Dateien laden (x/n), Paket bauen, prüfen, installieren, fertig. Bei Fehlern zeigt er, an welcher Stelle es hakt.
+
 ## 1.5.2
 - VPN-Erkennung korrigiert: Eine pausierte oder gestoppte Verbindung (z. B. `tailscale down`) gilt nicht mehr als „verbunden“, auch wenn die Schnittstelle noch existiert.
 - Tailscale wird über seinen Status erkannt: ohne Exit-Node als „Tailscale an“ (Internet läuft direkt), mit Exit-Node als aktives VPN.
