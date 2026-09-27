@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/update.png" alt="Tuxdex – Updates" width="860">
+  <img src="docs/readme/hero.png" alt="Tuxdex auf einem Laptop – Sicherheits-Check" width="100%">
 </p>
 
 ---
@@ -26,6 +26,10 @@
 Tuxdex bündelt in einer übersichtlichen Oberfläche, wofür man sonst ein Dutzend Terminal-Befehle braucht: Updates, Pakete, USB-Sticks, Speicherplatz, Backups, Prozesse, Virenscan, Firewall und VPN.
 
 Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was passiert. Rückfragen von `pacman` oder `paru` erscheinen als Fenster. Das sudo-Passwort wird **einmal pro Sitzung** abgefragt und nie gespeichert.
+
+<p align="center">
+  <img src="docs/readme/modules.png" alt="Die 11 Module von Tuxdex" width="100%">
+</p>
 
 ## Module
 
@@ -45,8 +49,14 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 
 ## Screenshots
 
-| Software | Flatpak |
+<p align="center">
+  <img src="docs/readme/showcase.png" alt="Backup, Flatpak-Rechte und Datenträger" width="100%">
+</p>
+
+| Updates | Backup |
 |---|---|
+| ![Updates](docs/screenshots/update.png) | ![Backup](docs/screenshots/backup.png) |
+| **Software** | **Flatpak** |
 | ![Software](docs/screenshots/software.png) | ![Flatpak](docs/screenshots/flatpak.png) |
 | **Datenträger** | **Speicher** |
 | ![Datenträger](docs/screenshots/disks.png) | ![Speicher](docs/screenshots/storage.png) |
@@ -113,7 +123,11 @@ python3 tuxdex.py
 
 ## Datenschutz & Sicherheit
 
-- **Keine Telemetrie.** Tuxdex sendet selbst nichts ins Internet. Einzige Ausnahme: der Knopf **„Öffentliche IP prüfen“** fragt `https://am.i.mullvad.net/json` ab, und zwar nur auf Klick.
+<p align="center">
+  <img src="docs/readme/principles.png" alt="Alles sichtbar · Passwort bleibt geheim · Keine Telemetrie · Offen & frei" width="100%">
+</p>
+
+- **Keine Telemetrie.** Tuxdex sammelt keine Nutzungsdaten. Ins Internet geht es nur für die Update-Prüfung (GitHub, abschaltbar) und für Prüfungen, die du selbst anklickst: **„Öffentliche IP prüfen“** (am.i.mullvad.net) und den **Leak-Test** (bash.ws, ipapi.is, am.i.mullvad.net).
 - **Passwort:** Das sudo-Passwort geht direkt an `sudo -v` und wird weder gespeichert noch protokolliert. Weitere Befehle nutzen die bestehende sudo-Sitzung (`sudo -n`).
 - **Mullvad-Kontonummer:** geht direkt an `mullvad account login` und wird weder angezeigt noch protokolliert.
 - **Schutz vor Fehlbedienung:** System-Partitionen (`/`, `/boot`, `/home`, Swap) lassen sich nicht aushängen oder formatieren. Formatieren verlangt das Eintippen des Gerätenamens, direkt davor prüft Tuxdex noch einmal, ob die Partition wirklich ausgehängt ist. Destruktive Aktionen fragen immer nach.
@@ -127,7 +141,7 @@ tuxdex.desktop         Eintrag im Anwendungsmenü
 tuxdex.svg, *.png      App-Icon in allen Größen
 PKGBUILD               Bauanleitung für makepkg / pacman
 CHANGELOG.md           Änderungen je Version
-docs/                  Screenshots und Logo-Varianten
+docs/                  Screenshots, README-Grafiken und Logo-Varianten
 ```
 
 ## Mitmachen
