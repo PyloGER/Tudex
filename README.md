@@ -175,6 +175,7 @@ tuxdex.svg, *.png      App-Icon in allen Größen
 PKGBUILD               Bauanleitung für makepkg / pacman
 CHANGELOG.md           Änderungen je Version
 docs/                  Screenshots, README-Grafiken und Logo-Varianten
+.github/workflows/     Legt für jede neue Version auf main automatisch ein GitHub-Release an
 ```
 
 ## Mitmachen
