@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.0-beta.6
+- **Pop-ups überarbeitet**: kein schwarz hinterlegter Text mehr in Hinweis-, Warn- und Rückfrage-Fenstern (trat unter KDE auf).
+- Flache Symbole in den Tuxdex-Farben statt der Symbole des System-Themes; Buttons in allen Pop-ups im Tuxdex-Stil (Hauptaktion farbig, Abbrechen links, Aktion rechts), mehr Innenabstand.
+- Verschlüsseltes Backup wiederherstellen: Passwort-Abfrage im Tuxdex-Stil und auf Deutsch statt des englischen Standardfensters.
+
 ## 1.6.0-beta.5
 - Taskmanager → **Autostart**:
   - Autostart-Programme per Schalter an/aus, eigene Einträge entfernen, installierte Programme hinzufügen. System-Einträge bleiben unangetastet – Tuxdex legt nur eine eigene Einstellung in `~/.config/autostart` an.

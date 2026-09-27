@@ -131,7 +131,7 @@ MODULES = [
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.6.0-beta.5"
+APP_VERSION = "1.6.0-beta.6"
 SYSTEM_INSTALL = os.path.abspath(__file__).startswith("/usr/")
 
 # App-Logo (Kachel mit drei Reglern) – Taskleiste, Kopfzeile, Starter
@@ -384,7 +384,12 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 /* Dialoge */
 QDialog, QMessageBox { background: $bg2; }
-QMessageBox QLabel { background: transparent; }
+/* Feste Fläche statt transparent – sonst malen manche Plattform-Themes (KDE) die Labels schwarz */
+QDialog QLabel { background: $bg2; }
+QDialogButtonBox { background: $bg2; }
+QMessageBox QPushButton { min-width: 88px; }
+/* Reihenfolge wie in den eigenen Dialogen: Abbrechen links, Aktion rechts */
+QDialogButtonBox { button-layout: 3; }
 #DialogTitle { font-size: 14pt; font-weight: 600; }
 #Warn { color: $warn; }
 #Changed { color: $accent; font-size: 8pt; font-weight: 600; border: 1px solid $accent; border-radius: 3px; padding: 0 5px; }
@@ -1106,9 +1111,42 @@ class Page(QScrollArea):
 # Dialoge
 # --------------------------------------------------------------------------
 
+# Flache Dialog-Symbole in den Status-Farben statt der Symbole des System-Themes
+_MSG_ICONS = {
+    QMessageBox.Information: ("info", '<rect x="21.5" y="20" width="5" height="15" rx="2.5"/>'
+                                      '<circle cx="24" cy="13.5" r="3"/>'),
+    QMessageBox.Warning: ("warn", '<rect x="21.5" y="11" width="5" height="16" rx="2.5"/>'
+                                  '<circle cx="24" cy="34" r="3"/>'),
+    QMessageBox.Critical: ("danger", '<path d="M17 17l14 14M31 17l-14 14" stroke="{bg}" stroke-width="5" '
+                                     'stroke-linecap="round" fill="none"/>'),
+    QMessageBox.Question: ("accent", '<path d="M18.5 18.5a5.5 5.5 0 1 1 8 4.9c-1.6.8-2.5 2-2.5 3.6v1" '
+                                     'stroke="{bg}" stroke-width="4.5" stroke-linecap="round" fill="none"/>'
+                                     '<circle cx="24" cy="35" r="2.8"/>'),
+}
+
+
+def set_msg_icon(box, icon):
+    tone, glyph = _MSG_ICONS[icon]
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">'
+           f'<circle cx="24" cy="24" r="22" fill="{COLORS[tone]}"/>'
+           f'<g fill="{COLORS["bg2"]}">{glyph.replace("{bg}", COLORS["bg2"])}</g></svg>')
+    box.setIconPixmap(svg_icon(svg, 40).pixmap(40, 40))
+
+
+def style_msg_box(box):
+    """Luft wie bei den eigenen Dialogen, Button-Varianten nachträglich anwenden."""
+    box.layout().setContentsMargins(24, 20, 24, 16)
+    box.layout().setHorizontalSpacing(16)
+    box.layout().setVerticalSpacing(12)
+    for b in box.buttons():
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFocusPolicy(Qt.TabFocus)  # Fokusring nur bei Tastatur-Navigation
+        repolish(b)
+
+
 def _msg(parent, icon, title, text, buttons):
     box = QMessageBox(parent)
-    box.setIcon(icon)
+    set_msg_icon(box, icon)
     box.setWindowTitle(title)
     box.setText(text)
     result = {}
@@ -1118,6 +1156,7 @@ def _msg(parent, icon, title, text, buttons):
         result[b] = value
         if value:
             box.setDefaultButton(b)
+    style_msg_box(box)
     box.exec()
     return result.get(box.clickedButton(), False)
 
@@ -1140,7 +1179,9 @@ def show_error(parent, title, text):
 
 
 class PasswordDialog(QDialog):
-    def __init__(self, parent, title="Administrator-Passwort"):
+    def __init__(self, parent, title="Administrator-Passwort", heading="sudo-Passwort eingeben",
+                 note="Wird für die Dauer des Programmlaufs gemerkt – du musst es danach nicht erneut eingeben.",
+                 ok_text="Anmelden"):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
@@ -1152,9 +1193,8 @@ class PasswordDialog(QDialog):
         lay.addWidget(spacer)
         lay.setContentsMargins(32, 28, 32, 24)
         lay.setSpacing(12)
-        lay.addWidget(Label("sudo-Passwort eingeben", "DialogTitle"))
-        lay.addWidget(Label("Wird für die Dauer des Programmlaufs gemerkt – "
-                            "du musst es danach nicht erneut eingeben.", "Small", wrap=True))
+        lay.addWidget(Label(heading, "DialogTitle"))
+        lay.addWidget(Label(note, "Small", wrap=True))
         self.entry = LineEdit()
         self.entry.setEchoMode(QLineEdit.Password)
         self.entry.setMinimumHeight(42)
@@ -1168,7 +1208,7 @@ class PasswordDialog(QDialog):
         btns = QHBoxLayout()
         btns.addStretch(1)
         btns.addWidget(Button("Abbrechen", "ghost", self.reject))
-        ok = Button("Anmelden", "primary", self.accept)
+        ok = Button(ok_text, "primary", self.accept)
         ok.setDefault(True)
         btns.addWidget(ok)
         lay.addSpacing(8)
@@ -2870,6 +2910,7 @@ class FlatpakTab(Page):
         if not a:
             return
         box = QMessageBox(self)
+        set_msg_icon(box, QMessageBox.Question)
         box.setWindowTitle("Deinstallieren")
         box.setText(f"{a['name']} deinstallieren?")
         box.setInformativeText("Persönliche Daten der App (~/.var/app) können mit gelöscht werden.")
@@ -2878,6 +2919,9 @@ class FlatpakTab(Page):
         wipe.setProperty("variant", "danger")
         keep.setProperty("variant", "primary")
         cancel = box.addButton("Abbrechen", QMessageBox.RejectRole)
+        cancel.setProperty("variant", "ghost")
+        box.setDefaultButton(keep)
+        style_msg_box(box)
         box.exec()
         if box.clickedButton() not in (keep, wipe):
             return
@@ -9667,9 +9711,11 @@ class BackupTab(Page):
             os.makedirs(dest, exist_ok=True)
         passfile = None
         if b["encrypted"]:
-            from PySide6.QtWidgets import QInputDialog
-            pw, ok = QInputDialog.getText(self, "Passwort", "Passwort des Archivs:", QLineEdit.Password)
-            if not ok or not pw:
+            dlg = PasswordDialog(self, "Archiv-Passwort", "Passwort des Archivs",
+                                 "Das Backup ist verschlüsselt. Das Passwort wird nicht gespeichert.",
+                                 "Wiederherstellen")
+            pw = dlg.entry.text() if dlg.exec() == QDialog.Accepted else ""
+            if not pw:
                 return
             fd, passfile = tempfile.mkstemp(prefix="tuxdex-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
             os.write(fd, pw.encode())
@@ -10112,6 +10158,7 @@ class UpdatePanel(QWidget):
     def _offer_update(self, ver, changes_html):
         """Beim Start: neue Version in einem Fenster anbieten."""
         box = QMessageBox(self.window())
+        set_msg_icon(box, QMessageBox.Information)
         box.setWindowTitle("Update verfügbar")
         box.setTextFormat(Qt.RichText)
         box.setText(f"<b>Tuxdex {ver} ist verfügbar</b> – installiert ist {APP_VERSION}.")
@@ -10121,6 +10168,7 @@ class UpdatePanel(QWidget):
         now = box.addButton("Jetzt aktualisieren", QMessageBox.AcceptRole)
         now.setProperty("variant", "primary")
         box.setDefaultButton(now)
+        style_msg_box(box)
         box.exec()
         if box.clickedButton() is now:
             self.app.open_settings()
