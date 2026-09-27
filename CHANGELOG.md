@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.5
+- Einstellungen → Aktualisierung: Auswahl **Vollversion** oder **Beta** – Beta-Versionen bekommen neue Funktionen früher. Zurück zur Vollversion geht jederzeit.
+
 ## 1.5.4
 - Sicherheits-Check prüft zusätzlich:
   - **CPU-Microcode** (`intel-ucode`/`amd-ucode`) – fehlt er, per Klick installieren.
