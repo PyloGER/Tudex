@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.3--alpha-2fb3a3">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0--alpha-2fb3a3">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-2fb3a3">
   <img alt="For Arch Linux" src="https://img.shields.io/badge/for-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -34,6 +34,14 @@ Tuxdex bundles into one clear interface what otherwise takes a dozen terminal co
 
 Every command runs **visibly** in the output box, so you always see what's happening. Questions from `pacman` or `paru` appear as windows. The sudo password is asked **once per session** and never stored.
 
+### Who is Tuxdex for?
+
+- **People coming from Windows** who want an easy start with Arch Linux – without having to learn dozens of commands first. Updates, programs, USB sticks, backups: all with a click, the way you're used to.
+- **Everyone who loves graphical interfaces** and would rather manage their system in a tidy window than in the terminal.
+- **The curious**: every command runs visibly – so you learn what happens under the hood along the way.
+
+Tuxdex isn't meant for pros who do everything in the terminal – but it's still handy as a quick overview.
+
 **Language:** English and German. Tuxdex follows your system language; you can switch under **Settings (gear at the bottom left) → Language**.
 
 <p align="center">
@@ -41,6 +49,8 @@ Every command runs **visibly** in the output box, so you always see what's happe
 </p>
 
 ## Modules
+
+Tuxdex is a **toolkit**: under **Settings → Modules** you choose which tools appear in the bar – not everyone needs every tool. Removed modules aren't loaded at all. Updates is always included; **Swap, Antivirus and Users** are hidden at first because they're more for advanced users.
 
 | Module | What it does |
 |---|---|
@@ -50,11 +60,29 @@ Every command runs **visibly** in the output box, so you always see what's happe
 | **Drives** | Drives and partitions as a tree · mount, unmount, rename, check, **format** (ext4, btrfs, xfs, exFAT, FAT32, NTFS), safely remove · detects new USB sticks automatically · system partitions are protected |
 | **Storage** | Usage per drive · “What is using the space?” with drill-down into folders · cleanup: package cache, orphaned packages, journal, trash, Flatpak |
 | **Backup** | Snapshots (versioned, space-saving), mirror or compressed archives (zstd/xz/gzip, optionally with password) · **several targets at once** · verification after writing · custom names with date ([how it works](#naming-backups)) · old versions cleaned up automatically · restore · daily/weekly schedule |
-| **Swap** | Create and remove a swap file, set swappiness |
+| **Swap** *(hidden at first)* | Create and remove a swap file, set swappiness |
 | **Task manager** | Processes with program icons, CPU, RAM, disk I/O, energy estimate · performance tiles with details on click: CPU (clock, caches, virtualization), RAM (speed, slots, type), drives, GPU (clock, power, VRAM, PCIe), network, battery, fans · system: CPU/GPU name, mainboard, IP addresses, DNS · **autostart & boot time** · **version status** of graphics driver, microcode, BIOS, kernel, firmware |
-| **Antivirus** | Front end for an already installed ClamAV (optional): update signatures, scan folders or the whole system – with **live progress** (files, data, speed, time left) and whether the scan is running or stuck · quarantine with restore |
+| **Antivirus** *(hidden at first)* | ClamAV is mainly meant for servers and of little use on Linux desktops – an own tool for desktop users is on the [roadmap](#roadmap). Front end for an already installed ClamAV (optional): update signatures, scan folders or the whole system – with **live progress** (files, data, speed, time left) and whether the scan is running or stuck · quarantine with restore |
 | **Security** | Security check (VPN, DNS, proxy, firewall, LUKS, Secure Boot, CPU microcode, swap encryption, kernel protection, updates, antivirus, open ports, SSH, known vulnerabilities) · **checklist for maintenance, privacy & performance** (package signatures, mirrors, sudo, log size, core dumps, shell history, TRIM, I/O scheduler, NTP, old kernel modules, package list …) · **DNS leak test & VPN/proxy detection** · **block/allow open ports with a button** · front end for an already installed **Mullvad VPN** (optional: account, location, kill switch, DNS filters) · ufw firewall with rules |
-| **Users** | User accounts and last login |
+| **Users** *(hidden at first)* | User accounts and last login |
+
+## Roadmap
+
+Goals and plans – what's already there and what comes next.
+
+**Planned**
+- [ ] **Interactive learning software** for Arch Linux, connected to Tuxdex: learn commands step by step – see the matching command for every action in Tuxdex, understand it and try it yourself.
+- [ ] **Ready-made, tested ISOs**: Arch Linux with KDE Plasma and Tuxdex, already set up – with an installer that's much simpler than today's Arch installation.
+- [ ] **Own security tool for desktop users** to replace ClamAV.
+- [ ] **Module market**: more modules you add as needed.
+
+**Done**
+- [x] Modules as a toolkit – add and remove them (1.2.0)
+- [x] English interface and README (1.1.0)
+- [x] Own pacman repository, no AUR needed (1.1.0)
+- [x] Security review of all root actions (1.1.0)
+
+Ideas and wishes are welcome as an [issue](../../issues).
 
 ## Screenshots
 
@@ -71,8 +99,8 @@ Every command runs **visibly** in the output box, so you always see what's happe
 | ![Drives](docs/screenshots/en/disks.png) | ![Storage](docs/screenshots/en/storage.png) |
 | **Security** | **Task manager** |
 | ![Security](docs/screenshots/en/security.png) | ![Task manager](docs/screenshots/en/tasks.png) |
-| **Checklist** | |
-| ![Checklist](docs/screenshots/en/checklist.png) | |
+| **Checklist** | **Modules (settings)** |
+| ![Checklist](docs/screenshots/en/checklist.png) | ![Modules](docs/screenshots/en/modules.png) |
 
 <sub>The screenshots show sample data.</sub>
 

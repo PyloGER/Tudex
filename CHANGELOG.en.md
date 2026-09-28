@@ -2,6 +2,13 @@
 
 English version of [CHANGELOG.md](CHANGELOG.md). Entries before 1.0.0 are only available in German.
 
+## 1.2.0
+Modules as a toolkit, clearer audience, roadmap.
+
+- **Settings → Modules**: you can now put Tuxdex together yourself. Every module except Updates can be removed and added back; removed modules disappear from the bar and aren't loaded.
+- **Swap, Antivirus and Users are hidden at first** – they're more for advanced users, and ClamAV is of little use on Linux desktops. If you use them: add them back under Settings → Modules. Links from other modules (e.g. from the security check) still open them.
+- **README**: new section "Who is Tuxdex for?" (people coming from Windows, GUI fans) and a **roadmap** with goals – learning software for Arch commands, ready-made ISOs with a simple installer, an own security tool instead of ClamAV, a module market.
+
 ## 1.1.3
 Maturity shown.
 

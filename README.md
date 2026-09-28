@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.3--alpha-2fb3a3">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.2.0--alpha-2fb3a3">
   <img alt="Lizenz" src="https://img.shields.io/badge/lizenz-MIT-2fb3a3">
   <img alt="Für Arch Linux" src="https://img.shields.io/badge/f%C3%BCr-Arch%20Linux-1793d1">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-3776ab">
@@ -34,6 +34,14 @@ Tuxdex bündelt in einer übersichtlichen Oberfläche, wofür man sonst ein Dutz
 
 Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was passiert. Rückfragen von `pacman` oder `paru` erscheinen als Fenster. Das sudo-Passwort wird **einmal pro Sitzung** abgefragt und nie gespeichert.
 
+### Für wen ist Tuxdex?
+
+- **Umsteiger von Windows**, die einen einfachen Einstieg in Arch Linux wollen – ohne erst Dutzende Befehle lernen zu müssen. Updates, Programme, USB-Sticks, Backups: alles per Klick, wie man es gewohnt ist.
+- **Alle, die grafische Oberflächen lieben** und ihr System lieber in einem aufgeräumten Fenster verwalten als im Terminal.
+- **Neugierige**: Jeder Befehl läuft sichtbar mit – so lernt man nebenbei, was unter der Haube passiert.
+
+Für Profis, die alles im Terminal machen, ist Tuxdex nicht gedacht – aber als schneller Überblick trotzdem praktisch.
+
 **Sprache:** Deutsch und Englisch. Tuxdex richtet sich nach der Systemsprache; umstellen unter **Einstellungen (Zahnrad unten links) → Sprache**.
 
 <p align="center">
@@ -41,6 +49,8 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 </p>
 
 ## Module
+
+Tuxdex ist ein **Baukasten**: Unter **Einstellungen → Module** wählst du selbst, welche Werkzeuge in der Leiste stehen – nicht jeder braucht jedes Tool. Abgewählte Module werden gar nicht erst geladen. Updates ist immer dabei; **Swap, Antivirus und Benutzer** sind anfangs ausgeblendet, weil sie eher für Fortgeschrittene sind.
 
 | Modul | Was es kann |
 |---|---|
@@ -50,11 +60,29 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 | **Datenträger** | Laufwerke und Partitionen als Baum · Einhängen, Aushängen, Umbenennen, Prüfen, **Formatieren** (ext4, btrfs, xfs, exFAT, FAT32, NTFS), sicher entfernen · erkennt neue USB-Sticks automatisch · System-Partitionen sind geschützt |
 | **Speicher** | Belegung je Festplatte · „Was belegt den Platz?“ mit Drill-down in Ordner · Aufräumen: Paket-Cache, verwaiste Pakete, Journal, Papierkorb, Flatpak |
 | **Backup** | Snapshots (versioniert, platzsparend), Spiegel oder komprimierte Archive (zstd/xz/gzip, optional mit Passwort) · **mehrere Ziele gleichzeitig** · Prüfung nach dem Schreiben · eigene Namen mit Datum ([so geht’s](#backups-benennen)) · alte Versionen automatisch aufräumen · wiederherstellen · Zeitplan täglich/wöchentlich |
-| **Swap** | Swapfile anlegen und entfernen, Swappiness einstellen |
+| **Swap** *(anfangs ausgeblendet)* | Swapfile anlegen und entfernen, Swappiness einstellen |
 | **Taskmanager** | Prozesse mit Programm-Icons, CPU, RAM, Datenträger-I/O, Energie-Schätzung · Leistung: CPU (Takt, Temperatur), RAM, GPU, Netzwerk, Datenträger, Akku · System: CPU-/GPU-Name, Mainboard, IP-Adressen, DNS · **Autostart & Bootzeit** · **Versionsstand** von Grafiktreiber, Microcode, BIOS, Kernel, Firmware |
-| **Antivirus** | Bedienung für ein bereits installiertes ClamAV (optional): Signaturen aktualisieren, Ordner oder ganzes System scannen – mit **Live-Fortschritt** (Dateien, Datenmenge, Tempo, Restzeit) und Status, ob der Scan läuft oder hängt · Quarantäne mit Wiederherstellen |
+| **Antivirus** *(anfangs ausgeblendet)* | ClamAV ist vor allem für Server gedacht und auf Linux-Desktops wenig nützlich – ein eigenes Werkzeug für Desktop-Nutzer steht auf der [Roadmap](#roadmap). Bedienung für ein bereits installiertes ClamAV (optional): Signaturen aktualisieren, Ordner oder ganzes System scannen – mit **Live-Fortschritt** (Dateien, Datenmenge, Tempo, Restzeit) und Status, ob der Scan läuft oder hängt · Quarantäne mit Wiederherstellen |
 | **Sicherheit** | Sicherheits-Check (VPN, DNS, Proxy, Firewall, LUKS, Secure Boot, CPU-Microcode, Swap-Verschlüsselung, Kernel-Schutz, Updates, Antivirus, offene Ports, SSH, bekannte Sicherheitslücken) · **Checkliste für Wartung, Datenschutz & Performance** (Paketsignaturen, Mirrors, sudo, Protokoll-Größe, Core Dumps, Shell-Verlauf, TRIM, I/O-Scheduler, NTP, alte Kernel-Module, Paketliste …) · **DNS-Leak-Test & VPN/Proxy-Erkennung** · **offene Ports per Knopf sperren/freigeben** · Bedienung für ein bereits installiertes **Mullvad VPN** (optional: Konto, Standort, Kill-Switch, DNS-Filter) · ufw-Firewall mit Regeln |
-| **Benutzer** | Benutzerkonten und letzte Anmeldung |
+| **Benutzer** *(anfangs ausgeblendet)* | Benutzerkonten und letzte Anmeldung |
+
+## Roadmap
+
+Ziele und Planung – was schon da ist und was als Nächstes kommt.
+
+**Geplant**
+- [ ] **Interaktive Lernsoftware** für Arch Linux, verbunden mit Tuxdex: Befehle Schritt für Schritt lernen – zu jeder Aktion in Tuxdex den passenden Befehl sehen, verstehen und selbst ausprobieren.
+- [ ] **Fertige, geprüfte ISOs**: Arch Linux mit KDE Plasma und Tuxdex, schon eingerichtet – mit einem Installer, der viel einfacher ist als die heutige Arch-Installation.
+- [ ] **Eigenes Sicherheits-Werkzeug für Desktop-Nutzer** als Ersatz für ClamAV.
+- [ ] **Modul-Markt**: weitere Module, die man sich nach Bedarf dazuholt.
+
+**Erledigt**
+- [x] Module als Baukasten – ab- und zuwählbar (1.2.0)
+- [x] Englische Oberfläche und README (1.1.0)
+- [x] Eigenes pacman-Repository, ohne AUR (1.1.0)
+- [x] Sicherheits-Review aller root-Aktionen (1.1.0)
+
+Ideen und Wünsche gern als [Issue](../../issues).
 
 ## Screenshots
 
@@ -71,8 +99,8 @@ Jeder Befehl läuft **sichtbar** im Ausgabefeld mit, du siehst also immer, was p
 | ![Datenträger](docs/screenshots/disks.png) | ![Speicher](docs/screenshots/storage.png) |
 | **Sicherheit** | **Taskmanager** |
 | ![Sicherheit](docs/screenshots/security.png) | ![Taskmanager](docs/screenshots/tasks.png) |
-| **Checkliste** | |
-| ![Checkliste](docs/screenshots/checklist.png) | |
+| **Checkliste** | **Module (Einstellungen)** |
+| ![Checkliste](docs/screenshots/checklist.png) | ![Module](docs/screenshots/modules.png) |
 
 <sub>Die Screenshots zeigen Beispieldaten.</sub>
 

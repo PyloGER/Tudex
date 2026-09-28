@@ -393,10 +393,37 @@ MODULES = [
     ("users", "Benutzer", "#e87fa8"),
 ]
 
+# Module wie Bausteine: Updates ist immer dabei, der Rest lässt sich unter Einstellungen → Module
+# zu- und abwählen. Abgewählte Module werden gar nicht erst geladen (spart RAM und Startzeit).
+MODULE_INFO = {
+    "update": "System-, AUR- und Flatpak-Updates mit Hinweisen vor riskanten Updates.",
+    "software": "Programme suchen, installieren und entfernen (pacman und AUR).",
+    "flatpak": "Flatpak-Apps verwalten und ihre Rechte per Schalter einstellen.",
+    "disks": "USB-Sticks und Festplatten einhängen, formatieren und prüfen.",
+    "storage": "Sehen, was Platz belegt, und typische Platzfresser aufräumen.",
+    "backup": "Sicherungen auf externe Laufwerke – mit Zeitplan und Wiederherstellen.",
+    "swap": "Auslagerungsspeicher (Swapfile, zram) einrichten. Für Fortgeschrittene.",
+    "tasks": "Laufende Programme, Leistung, Autostart und Bootzeit.",
+    "antivirus": "ClamAV-Virenscanner. Auf Linux-Desktops wenig nützlich – vor allem für Server und "
+                 "Dateien, die an Windows-Rechner weitergehen.",
+    "security": "Sicherheits-Check, Checkliste, Firewall, offene Ports und VPN.",
+    "users": "Benutzerkonten und Gruppen verwalten. Für Fortgeschrittene.",
+}
+MODULES_CORE = {"update"}
+MODULES_OFF_BY_DEFAULT = {"swap", "antivirus", "users"}
+
+
+def module_enabled(key, settings=None):
+    if key in MODULES_CORE:
+        return True
+    mods = (settings if settings is not None else load_settings()).get("modules", {})
+    return bool(mods.get(key, key not in MODULES_OFF_BY_DEFAULT))
+
+
 FONTS = {"sans": "Sans Serif", "mono": "Monospace"}
 
 APP_ID = "tuxdex"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.2.0"
 APP_STAGE = "alpha"        # Reifegrad – wird nur angezeigt, die Versionsnummer selbst bleibt ohne Zusatz
 
 
@@ -12549,6 +12576,51 @@ class SettingsPage(Page):
                                         "Neu starten"):
             self.app.restart()
 
+    def _modules_panel(self):
+        p = self.mod_panel = Panel("Module")
+        p.body.addWidget(Label("Stell dir Tuxdex so zusammen, wie du es brauchst: Nicht jeder braucht jedes Werkzeug. "
+                               "Abgewählte Module verschwinden aus der Leiste und werden nicht geladen – "
+                               "du kannst sie hier jederzeit wieder hinzufügen.", "Hint", wrap=True))
+        st = load_settings()
+        self.mod_buttons = {}
+        for key, label, color in MODULES:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            dot = QLabel()
+            dot.setFixedSize(10, 10)
+            dot.setStyleSheet(f"background:{color}; border-radius:2px;")
+            row.addWidget(dot, 0, Qt.AlignTop)
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            name = Label(label)
+            name.setStyleSheet("font-weight:600;")
+            col.addWidget(name)
+            col.addWidget(Label(MODULE_INFO.get(key, ""), "Hint", wrap=True))
+            row.addLayout(col, 1)
+            if key in MODULES_CORE:
+                row.addWidget(Label("Immer dabei", "Hint"), 0, Qt.AlignVCenter)
+            else:
+                b = Button("", "ghost", lambda _=False, k=key: self._toggle_module(k))
+                b.setMinimumWidth(130)
+                self.mod_buttons[key] = b
+                self._paint_module_button(key, module_enabled(key, st))
+                row.addWidget(b, 0, Qt.AlignVCenter)
+            p.body.addLayout(row)
+        return p
+
+    def _paint_module_button(self, key, on):
+        b = self.mod_buttons[key]
+        b.setText("Entfernen" if on else "Hinzufügen")
+        b.setProperty("variant", "ghost" if on else "primary")
+        repolish(b)
+
+    def _toggle_module(self, key):
+        on = not module_enabled(key)
+        self.app.set_module(key, on)
+        self._paint_module_button(key, on)
+        name = dict((m[0], m[1]) for m in MODULES)[key]
+        self.app.set_status(f"Modul „{name}“ hinzugefügt." if on else f"Modul „{name}“ ausgeblendet.")
+
     def _sys_changed(self, on):
         st = load_settings()
         st["sys_check_on_start"] = on
@@ -12583,6 +12655,7 @@ class SettingsPage(Page):
         langp.body.addLayout(lrow)
         langp.body.addWidget(Label("Wirkt nach einem Neustart von Tuxdex.", "Hint", wrap=True))
         self.lay.addWidget(langp)
+        self.lay.addWidget(self._modules_panel())
         self.update_panel = UpdatePanel(app)
         self.lay.addWidget(self.update_panel)
 
@@ -12827,6 +12900,7 @@ class MainWindow(QWidget):
         for i, (key, label, color) in enumerate(MODULES):
             self.stack.addWidget(QWidget())
             t = TabButton(label, color, lambda i=i: self.select(i))
+            t.setVisible(module_enabled(key))
             tb.addWidget(t)
             self.tabs.append(t)
         tb.addStretch(1)
@@ -13034,7 +13108,20 @@ class MainWindow(QWidget):
     def back_from_settings(self):
         self.select(self._last_tab)
 
+    def set_module(self, key, on):
+        """Modul zu- oder abwählen (Einstellungen → Module)."""
+        st = load_settings()
+        mods = dict(st.get("modules", {}))
+        mods[key] = bool(on)
+        st["modules"] = mods
+        save_settings(st)
+        i = [m[0] for m in MODULES].index(key)
+        self.tabs[i].setVisible(bool(on))
+        if not on and self._last_tab == i:
+            self._last_tab = 0
+
     def select(self, idx):
+        self.tabs[idx].setVisible(True)      # Sprung aus einem anderen Modul in ein abgewähltes: Tab kurz zeigen
         self._last_tab = idx
         self.gear.setChecked(False)
         new = MODULES[idx][0] not in self.pages
@@ -13076,6 +13163,22 @@ class MainWindow(QWidget):
 # --------------------------------------------------------------------------
 
 EN = {
+    'System-, AUR- und Flatpak-Updates mit Hinweisen vor riskanten Updates.': 'System, AUR and Flatpak updates with warnings before risky updates.',
+    'Programme suchen, installieren und entfernen (pacman und AUR).': 'Search, install and remove programs (pacman and AUR).',
+    'Flatpak-Apps verwalten und ihre Rechte per Schalter einstellen.': 'Manage Flatpak apps and set their permissions with switches.',
+    'USB-Sticks und Festplatten einhängen, formatieren und prüfen.': 'Mount, format and check USB sticks and drives.',
+    'Sehen, was Platz belegt, und typische Platzfresser aufräumen.': 'See what takes up space and clean up typical space hogs.',
+    'Sicherungen auf externe Laufwerke – mit Zeitplan und Wiederherstellen.': 'Backups to external drives – with schedule and restore.',
+    'Auslagerungsspeicher (Swapfile, zram) einrichten. Für Fortgeschrittene.': 'Set up swap (swapfile, zram). For advanced users.',
+    'Laufende Programme, Leistung, Autostart und Bootzeit.': 'Running programs, performance, autostart and boot time.',
+    'ClamAV-Virenscanner. Auf Linux-Desktops wenig nützlich – vor allem für Server und Dateien, die an Windows-Rechner weitergehen.': 'ClamAV virus scanner. Of little use on Linux desktops – mainly for servers and files passed on to Windows PCs.',
+    'Sicherheits-Check, Checkliste, Firewall, offene Ports und VPN.': 'Security check, checklist, firewall, open ports and VPN.',
+    'Benutzerkonten und Gruppen verwalten. Für Fortgeschrittene.': 'Manage user accounts and groups. For advanced users.',
+    'Module': 'Modules',
+    'Stell dir Tuxdex so zusammen, wie du es brauchst: Nicht jeder braucht jedes Werkzeug. Abgewählte Module verschwinden aus der Leiste und werden nicht geladen – du kannst sie hier jederzeit wieder hinzufügen.': "Put Tuxdex together the way you need it: not everyone needs every tool. Removed modules disappear from the bar and aren't loaded – you can add them back here at any time.",
+    'Immer dabei': 'Always included',
+    'Modul „{}“ hinzugefügt.': 'Module “{}” added.',
+    'Modul „{}“ ausgeblendet.': 'Module “{}” hidden.',
     '$ sudo systemctl restart clamav-freshclam\nDer Dienst clamav-freshclam läuft bereits und lädt die Signaturen selbst.\nNeustart löst sofort eine Prüfung aus – der erste Download (~200 MB) kann einige Minuten dauern.': '$ sudo systemctl restart clamav-freshclam\nThe clamav-freshclam service is already running and loads the signatures itself.\nA restart triggers a check immediately – the first download (~200 MB) can take a few minutes.',
     '$ {}{}\n(Nur Funde, Warnungen und die Zusammenfassung werden hier angezeigt.)': '$ {}{}\n(Only findings, warnings and the summary are shown here.)',
     "'{}' ist nicht installiert.\n\nsudo pacman -S {}": "'{}' is not installed.\n\nsudo pacman -S {}",

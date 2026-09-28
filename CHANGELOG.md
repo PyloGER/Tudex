@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0
+Module als Baukasten, klarere Zielgruppe, Roadmap.
+
+- **Einstellungen → Module**: Tuxdex lässt sich jetzt selbst zusammenstellen. Jedes Modul außer Updates kann entfernt und wieder hinzugefügt werden; abgewählte Module verschwinden aus der Leiste und werden nicht geladen.
+- **Swap, Antivirus und Benutzer sind anfangs ausgeblendet** – sie sind eher für Fortgeschrittene, und ClamAV bringt auf Linux-Desktops wenig. Wer sie nutzt: unter Einstellungen → Module wieder hinzufügen. Links aus anderen Modulen (z. B. aus dem Sicherheits-Check) öffnen sie weiterhin.
+- **README**: neuer Abschnitt „Für wen ist Tuxdex?“ (Umsteiger von Windows, GUI-Fans) und eine **Roadmap** mit Zielen – Lernsoftware für Arch-Befehle, fertige ISOs mit einfachem Installer, eigenes Sicherheits-Werkzeug statt ClamAV, Modul-Markt.
+
 ## 1.1.3
 Reifegrad sichtbar.
 

@@ -477,9 +477,17 @@ def prep_checklist():
     QTimer.singleShot(300, lambda: p.verticalScrollBar().setValue(p.cl_rows["sig"].parentWidget().y() - 8))
 
 
+def prep_modules():
+    win.open_settings()
+    sp = win.settings_page
+    panel = sp.mod_panel
+    QTimer.singleShot(300, lambda: sp.verticalScrollBar().setValue(panel.y() - 8))
+
+
 PLAN = [("update", prep_update, 2500), ("software", prep_software, 3000), ("flatpak", prep_flatpak, 3000),
         ("disks", prep_disks, 2500), ("storage", prep_storage, 2500), ("backup", prep_backup, 3000),
-        ("tasks", prep_tasks, 9000), ("security", prep_security, 4500), ("checklist", prep_checklist, 1500)]
+        ("tasks", prep_tasks, 9000), ("security", prep_security, 4500), ("checklist", prep_checklist, 1500),
+        ("modules", prep_modules, 1500)]
 
 
 def run(i=0):
